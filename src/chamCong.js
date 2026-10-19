@@ -2,6 +2,13 @@ import {z} from 'zod';
 import {Fault,entityName,recordId,digest,stable,json,compactReceipt} from './core.js';
 import {transaction} from './db.js';
 import {getSettings} from './settings.js';
+const mappedClean=new Map();
+async function assertMapped(pool,entity){
+  if((mappedClean.get(entity)||0)>Date.now())return;
+  const [[{n}]]=await pool.query('SELECT COUNT(*) n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL',[entity]);
+  if(Number(n))throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
+  mappedClean.set(entity,Date.now()+60000);
+}
 const cell=z.union([z.string().max(100000),z.number().finite(),z.boolean(),z.null()]);
 const change=z.object({op:z.enum(['append','update','delete']),recordId,rowValues:z.array(cell).max(160)}).strict();
 export const writeSchema=z.object({spreadsheetId:z.string().min(20).max(200),entity:entityName,headers:z.array(z.string().min(1).max(100)).min(1).max(150),
@@ -25,12 +32,9 @@ export async function readRows(pool,key,entity,query){
   if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
   if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
-  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||2000),ids=query.view==='ids';
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>2000||(query.view!=null&&!ids))throw new Fault(400,'INVALID_PAGE');
-  if(after===0){
-    const [[{n}]]=await pool.query('SELECT COUNT(*) n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL',[entity]);
-    if(Number(n))throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
-  }
+  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids';
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids))throw new Fault(400,'INVALID_PAGE');
+  if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
   const [candidates]=await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
     WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,[entity,after,upper,limit+1]);
@@ -38,7 +42,7 @@ export async function readRows(pool,key,entity,query){
   for(const row of candidates){
     if(selected.length>=limit)break;
     const size=ids?0:Buffer.byteLength(typeof row.data==='string'?row.data:JSON.stringify(row.data??null));
-    if(selected.length&&bytes+size>5000000)break;
+    if(selected.length&&bytes+size>7000000)break;
     selected.push(row);bytes+=size;
   }
   const headers=json(e.headers),hasMore=candidates.length>selected.length;

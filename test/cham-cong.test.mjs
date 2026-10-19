@@ -53,25 +53,25 @@ test('ids view returns record ids and does not select json data',async()=>{
  const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,view:'ids'});
  const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
  assert.equal(query.sql.includes('r.data'),false);
- assert.equal(query.args.at(-1),2001);
+ assert.equal(query.args.at(-1),50001);
  assert.deepEqual(page,{ok:true,headers,rows:[['ATT-1'],['ATT-2']],upper:19,hasMore:false,nextAfter:null});
 });
-test('limit above 2000 is an invalid page',async()=>{
+test('limit above 50000 is an invalid page',async()=>{
  const f=fixture();
- await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,limit:2001}),{code:'INVALID_PAGE'});
+ await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,limit:50001}),{code:'INVALID_PAGE'});
  await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,view:'full'}),{code:'INVALID_PAGE'});
 });
 test('unmapped count runs only when after is 0',async()=>{
  const row={id:'ATT-9',data:JSON.stringify({ID:'ATT-9',CreatedAt:'',FullName:'A'}),sheet_row:9};
  const f=readPool([row],{unmapped:3});
- await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId}),{code:'UNMAPPED_RECORDS'});
+ await assert.rejects(()=>readRows(f.pool,key,'Trips',{spreadsheetId}),{code:'UNMAPPED_RECORDS'});
  assert.equal(f.calls.filter(c=>c.sql.startsWith('SELECT COUNT(*)')).length,1);
- const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,after:4});
+ const page=await readRows(f.pool,key,'Trips',{spreadsheetId,after:4});
  assert.equal(f.calls.filter(c=>c.sql.startsWith('SELECT COUNT(*)')).length,1);
  assert.equal(page.rows.length,1);assert.equal(page.hasMore,false);assert.equal(page.nextAfter,null);
 });
 test('full page stops before the json byte cap',async()=>{
- const fat=id=>JSON.stringify({ID:id,CreatedAt:'',FullName:'x'.repeat(id==='A'?5100000:10)});
+ const fat=id=>JSON.stringify({ID:id,CreatedAt:'',FullName:'x'.repeat(id==='A'?7100000:10)});
  const rows=[{id:'A',data:fat('A'),sheet_row:2},{id:'B',data:fat('B'),sheet_row:3},{id:'C',data:fat('C'),sheet_row:4}];
  const f=readPool(rows);
  const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,limit:10});
