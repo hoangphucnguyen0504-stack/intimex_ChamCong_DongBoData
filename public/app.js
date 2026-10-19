@@ -16,6 +16,8 @@ async function refresh(initial=false) {
   if(!session||refreshing||document.hidden)return;refreshing=true;if(initial)$('#loading').hidden=false;
   try {
     const s=await api('/admin/status');lastStatus=s;
+    $('#access-scope').textContent=s.accessActivity?.scope||'Chưa có thông tin truy cập.';
+    table('#access-activity',s.accessActivity?.items||[],r=>[r.account,r.connection,r.active?'Vừa hoạt động (< 60 giây)':'Gần đây',r.resource||r.operation,r.method+(r.status?' · '+r.status:''),r.requests,date(r.lastSeen)]);
     const pending=s.entities.reduce((sum,e)=>sum+Number(e.pending),0),total=s.entities.reduce((sum,e)=>sum+Number(e.total),0);
     $('#total-count').textContent=total.toLocaleString('vi-VN');$('#pending-count').textContent=pending.toLocaleString('vi-VN');
     const latest=s.entities.map(e=>e.last_sync_at).filter(Boolean).sort().at(-1);$('#last-sync').textContent=date(latest);

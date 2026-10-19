@@ -11,8 +11,10 @@ import {Sheets} from './sheets.js';
 import {quotaGate} from './quota.js';
 import {archivedPage} from './archive.js';
 import * as chamCong from './chamCong.js';
+import {createAccessActivity} from './accessActivity.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
+  const accessActivity=createAccessActivity();
   app.disable('x-powered-by');app.use(helmet());
   app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});
   app.get('/health/live',(_req,res)=>res.json({ok:true}));
@@ -23,6 +25,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.use('/admin',auth.csrf);
   app.post('/admin/login',auth.login);
   app.use('/admin',auth.admin);
+  app.use('/admin',accessActivity.track('admin',config.ADMIN_USERNAME));
   app.post('/admin/logout',auth.logout);
   app.get('/admin/me',(_req,res)=>res.json({ok:true,username:config.ADMIN_USERNAME}));
   app.get('/admin/settings',async(_req,res)=>res.json({ok:true,settings:await getSettings(pool,config.CONFIG_ENCRYPTION_KEY,true)}));
@@ -43,7 +46,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
       COALESCE(SUM(r.deleted_at IS NOT NULL),0) deleted FROM entities e LEFT JOIN records r ON r.entity=e.name GROUP BY e.name`);
     const [runs]=await pool.query('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 30');
     const [jobs]=await pool.query('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 30');
-    res.json({ok:true,runtime,entities:entities.map(e=>({...e,headers:json(e.headers)})),runs,jobs});
+    res.json({ok:true,runtime,entities:entities.map(e=>({...e,headers:json(e.headers)})),runs,jobs,accessActivity:accessActivity.snapshot()});
   });
   app.post('/admin/entities',async(req,res)=>res.status(201).json(await saveEntity(pool,req.body)));
   app.post('/admin/jobs',async(req,res)=>res.status(202).json(await enqueue(pool,req.body.kind,req.body.entity||null)));
@@ -52,6 +55,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     if(!r.affectedRows)throw new Fault(409,'JOB_NOT_RETRYABLE');res.json({ok:true});
   });
   app.use('/v1',auth.integration);
+  app.use('/v1',accessActivity.track('api'));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
   app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));
   app.post('/v1/cham-cong/write',async(req,res)=>res.json(await chamCong.writeRows(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
