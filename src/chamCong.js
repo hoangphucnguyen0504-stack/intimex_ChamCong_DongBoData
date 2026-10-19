@@ -74,9 +74,9 @@ export async function readRows(pool,key,entity,query){
   let revision=null;
   if(stateKey){
     const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
-      FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+      FROM records r
       WHERE r.entity=? AND r.deleted_at IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=?
-      ORDER BY m.sheet_row DESC LIMIT 1`,[entity,stateKey]);
+      ORDER BY r.updated_at DESC LIMIT 1`,[entity,stateKey]);
     revision=latest[0]?.revision||null;
     if(!revision){
       const headers=json(e.headers);
@@ -129,7 +129,9 @@ export async function writeRows(pool,key,input){
       const next={...(old?json(old.data):{}),...Object.fromEntries(headers.map((h,i)=>[h,c.rowValues[i]??''])),ID:c.recordId};
       if(c.op==='delete'&&(!old||old.deleted_at))continue;
       if(old?.deleted_at)throw new Fault(409,'RECORD_DELETED');
-      if(old&&c.op==='append'){
+      // Phiên cân và cấu hình dùng mã cố định. Lần ghi sau cập nhật đúng dòng đó, không thêm bản sao.
+      const sameState=old&&c.op==='append'&&body.entity==='ApplicationState'&&String(next.Key||'')!==''&&String(json(old.data).Key||'')===String(next.Key);
+      if(old&&c.op==='append'&&!sameState){
         if(JSON.stringify(headers.map(h=>json(old.data)[h]??''))!==JSON.stringify(headers.map(h=>next[h]??'')))throw new Fault(409,'ID_EXISTS');
         saved.push({entity:body.entity,id:c.recordId,version:Number(old.version),syncStatus:old.dirty?'pending':'synced'});continue;
       }

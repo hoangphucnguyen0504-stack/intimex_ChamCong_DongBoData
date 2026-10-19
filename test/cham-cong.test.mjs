@@ -59,7 +59,7 @@ test('ids view returns record ids and does not select json data',async()=>{
 test('state key reads only the latest revision of that key',async()=>{
  const f=readPool([{id:'AST-1',data:JSON.stringify({ID:'AST-1',Key:'runtime-config',Revision:'rev-9',Value:'{}'}),sheet_row:2}]);
  const original=f.pool.query;
- f.pool.query=async(sql,args)=>sql.includes('ORDER BY m.sheet_row DESC')?[[{revision:'rev-9'}]]:original(sql,args);
+ f.pool.query=async(sql,args)=>sql.includes('ORDER BY r.updated_at DESC')?[[{revision:'rev-9'}]]:original(sql,args);
  await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'runtime-config'});
  const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
  assert.equal(query.sql.includes("JSON_EXTRACT(r.data,'$.Key')"),true);
