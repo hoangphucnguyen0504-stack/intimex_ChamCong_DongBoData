@@ -10,7 +10,12 @@ const schema = z.object({
   MYSQL_HOST:z.string().min(1), MYSQL_PORT:z.coerce.number().int().default(3306),MYSQL_DATABASE:z.string().min(1),
   MYSQL_USER:z.string().min(1),MYSQL_PASSWORD:z.string().min(1),MYSQL_SSL:z.enum(['true','false']).default('false'),
   MYSQL_POOL_SIZE:z.coerce.number().int().min(2).max(30).default(6),
-  SHEETS_REQUESTS_PER_MINUTE:z.coerce.number().int().min(1).max(40).default(40)
+  SHEETS_REQUESTS_PER_MINUTE:z.coerce.number().int().min(1).max(40).default(40),
+  GOOGLE_SHEET_ID:z.string().optional(),GOOGLE_SERVICE_ACCOUNT_JSON:z.string().optional(),
+  BOOTSTRAP_ENTITIES_FILE:z.string().optional(),
+  SYNC_INTERVAL_MINUTES:z.coerce.number().int().min(1).max(1440).default(60),
+  SYNC_BATCH_SIZE:z.coerce.number().int().min(1).max(200).default(100),
+  SYNC_ENABLED:z.enum(['true','false']).default('false')
 });
 export function loadConfig(env = process.env) {
   const r = schema.safeParse(env);

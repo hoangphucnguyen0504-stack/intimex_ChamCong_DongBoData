@@ -13,13 +13,15 @@ docker compose ps
 docker compose logs --tail 100 api worker
 ```
 
-MySQL không mở cổng ra Internet. API/UI mặc định chỉ mở `127.0.0.1:3200` trên VPS. Khi chưa có tên miền, trên máy cá nhân mở SSH tunnel:
+MySQL không mở cổng ra Internet. API/UI chỉ mở `127.0.0.1:3200` trên VPS; địa chỉ công khai đã cấu hình là **https://datadongbo.157.66.219.11.sslip.io**. Cần áp dụng block Caddy tương ứng theo [hướng dẫn địa chỉ public và Google](docs/PUBLIC_GOOGLE_SETUP.md).
+
+Nếu dùng SSH tunnel thay vì HTTPS, đổi `PUBLIC_ORIGIN=http://localhost:3200`, `COOKIE_SECURE=false` rồi tạo lại container. Trên máy cá nhân mở tunnel:
 
 ```bash
 ssh -L 3200:127.0.0.1:3200 remoteuser@157.66.219.11
 ```
 
-Mở **http://localhost:3200**. Tài khoản mặc định **admin**; mật khẩu ở biến **ADMIN_INITIAL_PASSWORD** trong `.env`. Cookie và Origin mặc định đã phù hợp SSH tunnel. Giữ cửa sổ SSH mở khi sử dụng tunnel.
+Mở **http://localhost:3200** khi đã cấu hình chế độ tunnel như trên. Tài khoản mặc định **admin**; mật khẩu ở biến **ADMIN_INITIAL_PASSWORD** trong `.env`. Giữ cửa sổ SSH mở khi sử dụng tunnel. Khi dùng tên miền public, giữ `COOKIE_SECURE=true`.
 
 Nếu chưa có `.env`, tạo bằng Node có sẵn hoặc bằng container Node, không cần cài npm trên VPS:
 
@@ -78,6 +80,10 @@ docker compose up -d --build
 ```
 
 ## 4. Thiết lập Google Sheets trong giao diện
+
+Cấu hình Google của backend chấm công đã được đưa vào `.env` riêng của DataDongBo. Khi database chưa có cấu hình, API/worker tự mã hóa và lưu Google settings vào MySQL. Khi đã cấu hình qua giao diện, khởi động lại không ghi đè lựa chọn trên UI. Muốn áp dụng lại env một cách chủ động: `docker compose exec -T api node scripts/apply-google-env.mjs` (giữ nguyên URL Sheet khi đã có row-map).
+
+17 tài nguyên đã được chuẩn bị theo tên tab và hàng tiêu đề thực tế, chỉ seed cấu hình còn thiếu. Chưa tự import bản ghi hoặc ghi thêm cột vào Sheets khi khởi động; bấm Nhập sau khi đã dừng chỉnh sửa nguồn và sẵn sàng chuyển đổi. `SYNC_ENABLED=false` tránh ghi nền vào Sheet đang phục vụ ứng dụng cũ.
 
 1. Tạo Google Service Account, bật Sheets API và tải JSON credential.
 2. Chia sẻ **Sheet dùng cho DataDongBo** với email Service Account, quyền Editor.

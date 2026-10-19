@@ -1,0 +1,6 @@
+# Thêm block này vào Caddy đang chạy trong Docker.
+# Chạy DataDongBo với docker-compose.hdoi-proxy.yml để nối cùng network.
+datadongbo.157.66.219.11.sslip.io {
+    encode zstd gzip
+    reverse_proxy datadongbo-api:3200
+}

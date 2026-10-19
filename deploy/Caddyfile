@@ -1,5 +1,5 @@
 # Đổi hostname và cập nhật PUBLIC_ORIGIN, COOKIE_SECURE=true trong .env.
-data.example.com {
+datadongbo.157.66.219.11.sslip.io {
     encode zstd gzip
     reverse_proxy 127.0.0.1:3200
 }

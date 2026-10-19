@@ -1,0 +1,12 @@
+# Dùng Caddy/HDoi hiện có, không chiếm thêm cổng 80/443.
+# docker compose -f docker-compose.yml -f docker-compose.hdoi-proxy.yml up -d --build
+services:
+  api:
+    networks:
+      default:
+      existing-caddy:
+        aliases: [datadongbo-api]
+networks:
+  existing-caddy:
+    external: true
+    name: ${CADDY_DOCKER_NETWORK:-hdoi_default}

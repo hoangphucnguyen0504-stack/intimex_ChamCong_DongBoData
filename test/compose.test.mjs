@@ -9,4 +9,6 @@ test('Docker manifests parse, isolate MySQL and keep admin bound to localhost',(
   assert(prod.services.api.read_only);assert.deepEqual(prod.services.worker.command,['node','src/worker.js']);assert(!external.services.mysql);assert.deepEqual(external.services.worker.ports,[]);
   assert.equal(testCompose.services['mysql-test'].environment.MYSQL_DATABASE,'datadongbo_test');assert(!testCompose.services['mysql-test'].volumes);
   assert(readFileSync('test/Dockerfile.dockerignore','utf8').includes('.env'));
+  const proxy=load('docker-compose.hdoi-proxy.yml');assert(proxy.networks['existing-caddy'].external);assert.deepEqual(proxy.services.api.networks['existing-caddy'].aliases,['datadongbo-api']);
+  assert(readFileSync('deploy/Caddyfile.docker','utf8').includes('reverse_proxy datadongbo-api:3200'));
 });
