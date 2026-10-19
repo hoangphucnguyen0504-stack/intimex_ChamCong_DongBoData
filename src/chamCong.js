@@ -37,9 +37,21 @@ export async function readRows(pool,key,entity,query){
   if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,180}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
-  const keyFilter=stateKey?" AND JSON_UNQUOTE(JSON_EXTRACT(r.data, '$.Key'))=?":'';
+  let revision=null;
+  if(stateKey){
+    const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
+      FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+      WHERE r.entity=? AND r.deleted_at IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=?
+      ORDER BY m.sheet_row DESC LIMIT 1`,[entity,stateKey]);
+    revision=latest[0]?.revision||null;
+    if(!revision){
+      const headers=json(e.headers);
+      return {ok:true,headers,rows:[],upper,hasMore:false,nextAfter:null};
+    }
+  }
+  const keyFilter=stateKey?" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
   const [candidates]=await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
-    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`,stateKey?[entity,after,upper,stateKey,limit+1]:[entity,after,upper,limit+1]);
+    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`,stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
   const selected=[];let bytes=0;
   for(const row of candidates){
     if(selected.length>=limit)break;
