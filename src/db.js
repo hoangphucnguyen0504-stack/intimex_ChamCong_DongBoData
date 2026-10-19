@@ -14,6 +14,9 @@ export async function migrate(pool) {
     const [[lock]]=await conn.query("SELECT GET_LOCK('datadongbo-migration',30) AS acquired");
     if(!Number(lock.acquired)) throw Error('MIGRATION_BUSY');
     for(const sql of source.split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const [indexed]=await conn.query("SELECT 1 ok FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='records' AND index_name='record_state_key' LIMIT 1");
+    const [[version]]=await conn.query('SELECT VERSION() AS v');
+    if(!indexed.length && /^(8\.|9\.)/.test(String(version.v))) await conn.query("ALTER TABLE records ADD INDEX record_state_key (entity, (JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key'))))");
   } finally {await conn.query("SELECT RELEASE_LOCK('datadongbo-migration')").catch(()=>{});conn.release();}
 }
 export async function transaction(pool, fn) {
