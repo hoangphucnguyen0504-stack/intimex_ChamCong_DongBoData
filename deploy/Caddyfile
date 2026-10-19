@@ -1,0 +1,5 @@
+# Đổi hostname và cập nhật PUBLIC_ORIGIN, COOKIE_SECURE=true trong .env.
+data.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3200
+}

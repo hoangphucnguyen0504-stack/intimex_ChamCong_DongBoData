@@ -1,0 +1,82 @@
+CREATE TABLE IF NOT EXISTS settings (
+ id TINYINT PRIMARY KEY, encrypted MEDIUMTEXT NOT NULL
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS entities (
+ name VARCHAR(64) COLLATE utf8mb4_bin PRIMARY KEY,
+ tab_name VARCHAR(100) NOT NULL UNIQUE,
+ headers JSON NOT NULL,
+ retention_days INT NOT NULL DEFAULT 0,
+ bootstrap_state VARCHAR(20) NOT NULL DEFAULT 'new',
+ next_row INT NOT NULL DEFAULT 2,
+ import_row INT NOT NULL DEFAULT 2,
+ last_sync_at DATETIME(3) NULL,
+ last_error VARCHAR(100) NULL
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS records (
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+ data JSON NOT NULL,
+ version BIGINT UNSIGNED NOT NULL,
+ synced_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ dirty TINYINT NOT NULL DEFAULT 1,
+ business_at DATETIME(3) NOT NULL,
+ finalized_at DATETIME(3) NULL,
+ updated_at DATETIME(3) NOT NULL,
+ deleted_at DATETIME(3) NULL,
+ PRIMARY KEY(entity,id),
+ INDEX sync_pending(entity,dirty,updated_at),
+ INDEX retention(entity,finalized_at),
+ INDEX recent(entity,business_at,id)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS row_map (
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+ sheet_row INT NOT NULL,
+ archived_at DATETIME(3) NULL,
+ business_at DATETIME(3) NULL,
+ deleted_at DATETIME(3) NULL,
+ PRIMARY KEY(entity,id), UNIQUE KEY sheet_position(entity,sheet_row)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS requests (
+ id VARCHAR(128) COLLATE utf8mb4_bin PRIMARY KEY,
+ fingerprint CHAR(64) NOT NULL,
+ response JSON NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS jobs (
+ id CHAR(36) PRIMARY KEY,
+ kind VARCHAR(20) NOT NULL,
+ entity VARCHAR(64) NULL,
+ state VARCHAR(20) NOT NULL DEFAULT 'pending',
+ attempts INT NOT NULL DEFAULT 0,
+ available_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ finished_at DATETIME(3) NULL,
+ error_code VARCHAR(100) NULL,
+ INDEX due(state,available_at)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS sync_runs (
+ id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ entity VARCHAR(64) NOT NULL,
+ kind VARCHAR(20) NOT NULL,
+ state VARCHAR(20) NOT NULL DEFAULT 'running',
+ rows_count INT NOT NULL DEFAULT 0,
+ started_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ finished_at DATETIME(3) NULL,
+ error_code VARCHAR(100) NULL
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS runtime_state (
+ id TINYINT PRIMARY KEY,
+ heartbeat_at DATETIME(3) NULL,
+ next_sync_at DATETIME(3) NULL,
+ next_google_at DATETIME(3) NULL,
+ failures INT NOT NULL DEFAULT 0,
+ worker_error VARCHAR(100) NULL
+) ENGINE=InnoDB;
+INSERT IGNORE INTO runtime_state(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS sessions (
+ token_hash CHAR(64) PRIMARY KEY, expires_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS login_limits (
+ ip_hash CHAR(64) PRIMARY KEY, hits INT NOT NULL, expires_at DATETIME(3) NOT NULL
+) ENGINE=InnoDB;

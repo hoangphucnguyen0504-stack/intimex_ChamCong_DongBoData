@@ -1,0 +1,21 @@
+# MySQL đã có trên VPS: docker compose -f docker-compose.external.yml up -d --build
+name: datadongbo
+services:
+  api: &app
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: {PORT: '3200'}
+    ports: ['127.0.0.1:${PORT:-3200}:3200']
+    extra_hosts: [host.docker.internal:host-gateway]
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  worker:
+    <<: *app
+    ports: []
+    command: [node, src/worker.js]

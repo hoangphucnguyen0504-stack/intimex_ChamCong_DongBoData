@@ -1,0 +1,27 @@
+# Database hoàn toàn riêng với volume tmpfs; không kết nối Google thật.
+name: datadongbo-test
+services:
+  mysql-test:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: datadongbo_test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: isolated-test-only
+      MYSQL_ROOT_PASSWORD: isolated-root-only
+    tmpfs: [/var/lib/mysql]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD=isolated-test-only mysql -utest -e "SELECT 1" datadongbo_test']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  test:
+    build:
+      context: .
+      dockerfile: test/Dockerfile
+    environment:
+      TEST_MYSQL_HOST: mysql-test
+      TEST_MYSQL_DATABASE: datadongbo_test
+      TEST_MYSQL_USER: test
+      TEST_MYSQL_PASSWORD: isolated-test-only
+    depends_on:
+      mysql-test: {condition: service_healthy}

@@ -1,0 +1,27 @@
+{
+  "name": "datadongbo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/worker.js",
+    "setup": "node scripts/setup.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:mysql": "node --test test/mysql.integration.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "google-auth-library": "^10.3.0",
+    "helmet": "^8.1.0",
+    "mysql2": "^3.15.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "yaml": "^2.9.1"
+  }
+}

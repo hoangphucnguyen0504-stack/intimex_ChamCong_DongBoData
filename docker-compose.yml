@@ -1,0 +1,49 @@
+name: datadongbo
+x-app: &app
+  build: .
+  restart: unless-stopped
+  env_file: .env
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-datadongbo}
+      MYSQL_USER: ${MYSQL_USER:-datadongbo}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Run npm run setup}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run npm run setup}
+    command: [--innodb-flush-log-at-trx-commit=1, --sync-binlog=1, --binlog-expire-logs-seconds=172800, --innodb-buffer-pool-size=128M]
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql -u"$$MYSQL_USER" -e "SELECT 1" "$$MYSQL_DATABASE"']
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  api:
+    <<: *app
+    ports: ['127.0.0.1:${PORT:-3200}:3200']
+    environment: {PORT: '3200'}
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3200/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *app
+    command: [node, src/worker.js]
+    depends_on:
+      api: {condition: service_healthy}
+volumes:
+  mysql-data:

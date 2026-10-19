@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DataĐồngBộ · Trung tâm dữ liệu</title><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<main id="login-panel" class="login-panel">
+  <div class="brand-mark">D↗</div><p class="eyebrow">DATADONGBO · MYSQL & GOOGLE SHEETS</p><h1>Trung tâm dữ liệu</h1>
+  <p class="muted">Theo dõi dữ liệu, lịch đồng bộ và kết nối hệ thống chấm công.</p>
+  <form id="login-form"><label>Tài khoản<input name="username" autocomplete="username" required></label><label>Mật khẩu<input name="password" type="password" autocomplete="current-password" required maxlength="200"></label><button>Đăng nhập</button></form>
+</main>
+<div id="application" hidden>
+  <aside><div class="brand"><span class="brand-mark small">D↗</span><strong>DataĐồngBộ</strong></div><p class="aside-caption">TRUNG TÂM ĐIỀU PHỐI</p>
+    <nav aria-label="Điều hướng"><button data-tab="overview" class="active">Tổng quan</button><button data-tab="settings">Cấu hình đồng bộ</button><button data-tab="entities">Tài nguyên dữ liệu</button><button data-tab="connection">Kết nối chấm công</button></nav>
+    <div class="aside-bottom"><span id="account"></span><button id="logout" class="ghost">Đăng xuất</button></div>
+  </aside>
+  <main class="workspace">
+    <header><div><p class="eyebrow">MYSQL → GOOGLE SHEETS</p><h1 id="page-title">Tổng quan đồng bộ</h1></div><span class="pill" id="worker-status">Đang kiểm tra worker…</span></header>
+    <p id="loading" class="muted" role="status" hidden>Đang tải dữ liệu...</p>
+    <section data-page="overview">
+      <div class="stats"><article><span>Bản ghi trong MySQL</span><strong id="total-count">—</strong><small>Dữ liệu vận hành</small></article><article><span>Chờ đồng bộ Sheets</span><strong id="pending-count">—</strong><small>Đã lưu an toàn trong MySQL</small></article><article><span>Đồng bộ thành công gần nhất</span><strong id="last-sync" class="date-value">—</strong><small>Thời gian Việt Nam</small></article><article><span>Lần chạy tiếp theo</span><strong id="next-sync" class="date-value">—</strong><small id="schedule-state">Chưa cấu hình</small></article></div>
+      <div class="panel"><div class="section-head"><div><h2>Tình trạng tài nguyên</h2><p class="muted">Dữ liệu được lưu trước, đồng bộ Google Sheets ở nền.</p></div><button id="sync-now">Đồng bộ ngay</button></div><div class="table-scroll"><table><thead><tr><th>Tài nguyên / Tab</th><th>Khởi tạo</th><th>Bản ghi</th><th>Chờ ghi</th><th>Đồng bộ gần nhất</th><th>Lỗi gần nhất</th></tr></thead><tbody id="entity-status"></tbody></table></div></div>
+      <div class="panel"><h2>Lịch sử đồng bộ</h2><div class="table-scroll"><table><thead><tr><th>Bắt đầu</th><th>Tài nguyên</th><th>Loại</th><th>Trạng thái</th><th>Số dòng</th><th>Kết thúc / Lỗi</th></tr></thead><tbody id="runs"></tbody></table></div></div>
+      <div class="panel"><h2>Tác vụ thủ công / Nhập lần đầu</h2><div class="table-scroll"><table><thead><tr><th>Thời gian</th><th>Loại / Tài nguyên</th><th>Trạng thái</th><th>Số lần lỗi</th><th>Lỗi / Xử lý</th></tr></thead><tbody id="jobs"></tbody></table></div></div>
+    </section>
+    <section data-page="settings" hidden>
+      <form id="settings-form" class="panel form-grid"><div class="full"><h2>Kết nối Google Sheets</h2><p class="muted">Khóa được mã hóa trong MySQL. Giao diện không đọc lại private key đã lưu.</p></div>
+        <label class="full">Spreadsheet ID<input name="spreadsheetId" required placeholder="Phần ID trong đường dẫn Google Sheets"></label>
+        <label>Lịch đồng bộ (phút)<input name="intervalMinutes" type="number" min="1" max="1440" value="60" required></label><label>Số bản ghi mỗi lô<input name="batchSize" type="number" min="1" max="200" value="100" required></label>
+        <label class="full">JSON Service Account<textarea name="serviceAccount" rows="6" spellcheck="false" placeholder="Dán JSON khi cấu hình lần đầu hoặc thay khóa. Để trống để giữ khóa đã lưu."></textarea></label>
+        <p id="credential-info" class="muted full"></p><label class="check full"><input name="enabled" type="checkbox"> Bật đồng bộ tự động</label>
+        <div class="actions full"><button>Lưu cấu hình</button><button type="button" id="test-sheets" class="ghost">Kiểm tra kết nối đã lưu</button></div>
+      </form>
+      <div class="panel"><h2>Quy tắc vận hành</h2><p>MySQL là nguồn dữ liệu chính. Google Sheets nhận các thay đổi theo lô. Không chỉnh tay vị trí dòng, cột ID và các cột <code>__dd_*</code> của tab đang liên kết.</p><p>Xóa cuốn chiếu chỉ áp dụng cho tài nguyên đã bật lưu trữ, bản ghi đã hoàn tất, đã đồng bộ phiên bản mới nhất và không thay đổi trong thời hạn lưu. Dữ liệu danh mục/tài khoản nên giữ vĩnh viễn.</p></div>
+    </section>
+    <section data-page="entities" hidden>
+      <form id="entity-form" class="panel form-grid"><div class="full"><h2>Thêm tài nguyên</h2><p class="muted">Một tài nguyên tương ứng một tab Google Sheets có sẵn. Cấu hình đúng thứ tự cột hiện tại.</p></div>
+        <label>Tên tài nguyên<input name="name" required pattern="[A-Za-z][A-Za-z0-9_]{0,63}" placeholder="VehicleTrips"></label><label>Tên tab Sheets<input name="tabName" required placeholder="VehicleTrips"></label>
+        <div class="full"><button type="button" id="read-headers" class="ghost">Lấy cột từ tab</button></div>
+        <label class="full">Tên cột theo thứ tự (mỗi dòng một cột)<textarea name="headers" rows="8" required placeholder="ID&#10;CreatedAt&#10;FullName&#10;Status&#10;UpdatedAt"></textarea></label>
+        <label>Số ngày lưu trong MySQL<input name="retentionDays" type="number" min="0" max="3650" value="0" required><small>0 = giữ vĩnh viễn; nhập 7 để lưu cuốn chiếu.</small></label>
+        <div class="actions full"><button>Lưu tài nguyên</button></div>
+      </form>
+      <div class="panel"><h2>Khởi tạo từ Sheets</h2><p class="muted">Chạy một lần cho từng tài nguyên, kể cả tab trống. Quá trình này đọc theo lô và chặn ghi vào tài nguyên đến khi hoàn tất. Nếu lỗi, sửa cấu hình/quyền truy cập rồi thử lại tác vụ.</p><div id="entity-actions"></div></div>
+    </section>
+    <section data-page="connection" hidden>
+      <div class="panel"><h2>Kết nối từ backend chấm công</h2><p>Token chỉ đặt trong backend, không đưa vào frontend hoặc biến VITE_. Xem token trong file <code>.env</code> trên máy chủ.</p><pre>DATA_DONG_BO_URL=https://data.tenmien.vn
+DATA_DONG_BO_TOKEN=&lt;API_TOKEN của DataDongBo&gt;</pre><p>Dùng client tại <code>client/datadongbo.mjs</code>. Lưu giữ requestId khi thử lại. API chỉ trả thành công sau khi giao dịch MySQL được commit; kết quả Sheets hiển thị riêng.</p><pre>POST /v1/batch
+Authorization: Bearer &lt;API_TOKEN&gt;
+{
+  "requestId": "ma-yeu-cau-co-dinh",
+  "operations": [{
+    "action": "create", "entity": "Attendance",
+    "id": "ATT-uuid", "data": {"FullName": "Nguyễn Văn A"}
+  }]
+}</pre><p>Đọc dữ liệu: <code>GET /v1/entities/Attendance/records?limit=200</code>. Sửa/xóa gửi <code>expectedVersion</code>. Tra cứu kết quả khi mất phản hồi: <code>GET /v1/requests/:requestId</code>.</p><p>Việc tạo dịch vụ này chưa chuyển dự án chấm công hiện tại sang MySQL. Cần tích hợp adapter và kiểm thử nghiệp vụ trước khi chuyển nguồn dữ liệu.</p></div>
+    </section>
+  </main>
+</div>
+<div id="notice" role="status" hidden></div>
+<script type="module" src="/app.js"></script>
+</body></html>
