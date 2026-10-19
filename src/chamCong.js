@@ -25,21 +25,25 @@ export async function readRows(pool,key,entity,query){
   if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
   if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
-  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||200);
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>200)throw new Fault(400,'INVALID_PAGE');
-  const [[{n}]]=await pool.query('SELECT COUNT(*) n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL',[entity]);
-  if(Number(n))throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
-  const [candidates]=await pool.query(`SELECT r.id,JSON_STORAGE_SIZE(r.data) AS bytes,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||2000),ids=query.view==='ids';
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>2000||(query.view!=null&&!ids))throw new Fault(400,'INVALID_PAGE');
+  if(after===0){
+    const [[{n}]]=await pool.query('SELECT COUNT(*) n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL',[entity]);
+    if(Number(n))throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
+  }
+  const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
+  const [candidates]=await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
     WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,[entity,after,upper,limit+1]);
   const selected=[];let bytes=0;
-  for(const row of candidates.slice(0,limit)){
-    if(selected.length&&bytes+Number(row.bytes)>1500000)break;
-    selected.push(row);bytes+=Number(row.bytes);
+  for(const row of candidates){
+    if(selected.length>=limit)break;
+    const size=ids?0:Buffer.byteLength(typeof row.data==='string'?row.data:JSON.stringify(row.data??null));
+    if(selected.length&&bytes+size>5000000)break;
+    selected.push(row);bytes+=size;
   }
-  const [page]=selected.length?await pool.query(`SELECT r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.id IN (${selected.map(()=>'?').join(',')}) ORDER BY m.sheet_row`,[entity,...selected.map(r=>r.id)]):[[]];
-  const headers=json(e.headers);
-  return {ok:true,headers,rows:page.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
-    hasMore:candidates.length>selected.length,nextAfter:candidates.length>selected.length?selected.at(-1).sheet_row:null};
+  const headers=json(e.headers),hasMore=candidates.length>selected.length;
+  return {ok:true,headers,rows:ids?selected.map(r=>[r.id]):selected.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
+    hasMore,nextAfter:hasMore?selected.at(-1).sheet_row:null};
 }
 const sqlDate=v=>v&&typeof v==='string'&&Number.isFinite(Date.parse(v))&&new Date(v).getUTCFullYear()>=1000?new Date(v):null;
 export async function writeRows(pool,key,input){
@@ -62,10 +66,13 @@ export async function writeRows(pool,key,input){
       catch(error){if(error.code==='ER_DUP_ENTRY')throw new Fault(409,'QUALITY_REVISION','Phiên bản đã được xử lý.');throw error;}
     }
     let nextRow=e.next_row;const saved=[];
+    const ids=body.changes.map(c=>c.recordId).sort(),marks=ids.map(()=>'?').join(',');
+    const [existing]=await db.query(`SELECT * FROM records WHERE entity=? AND id IN (${marks}) FOR UPDATE`,[body.entity,...ids]);
+    const [mappings]=await db.query(`SELECT * FROM row_map WHERE entity=? AND id IN (${marks})`,[body.entity,...ids]);
+    const oldById=new Map(existing.map(row=>[row.id,row])),mapById=new Map(mappings.map(row=>[row.id,row]));
     for(const c of body.changes){
       if(c.rowValues.length>headers.length||(c.op!=='delete'&&String(c.rowValues[headers.indexOf('ID')])!==c.recordId))throw new Fault(400,'INVALID_ROW_ID');
-      const [[old]]=await db.query('SELECT * FROM records WHERE entity=? AND id=? FOR UPDATE',[body.entity,c.recordId]);
-      const [[mapping]]=await db.query('SELECT * FROM row_map WHERE entity=? AND id=?',[body.entity,c.recordId]);
+      const old=oldById.get(c.recordId),mapping=mapById.get(c.recordId);
       if(!old&&mapping?.archived_at)throw new Fault(410,'RECORD_ARCHIVED','Không ghi đè bản ghi đã lưu trữ.');
       const next={...(old?json(old.data):{}),...Object.fromEntries(headers.map((h,i)=>[h,c.rowValues[i]??''])),ID:c.recordId};
       if(c.op==='delete'&&(!old||old.deleted_at))continue;
