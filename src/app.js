@@ -56,6 +56,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   });
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
+  app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
   app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));
   app.post('/v1/cham-cong/write',async(req,res)=>res.json(await chamCong.writeRows(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
