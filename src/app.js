@@ -10,13 +10,16 @@ import {enqueue,importRecord} from './sync.js';
 import {Sheets} from './sheets.js';
 import {quotaGate} from './quota.js';
 import {archivedPage} from './archive.js';
+import * as chamCong from './chamCong.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   app.disable('x-powered-by');app.use(helmet());
   app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});
   app.get('/health/live',(_req,res)=>res.json({ok:true}));
   app.get('/health/ready',async(_req,res)=>{try {await pool.query('SELECT 1');res.json({ok:true});}catch {res.status(503).json({ok:false});}});
-  app.use(express.json({limit:'2mb',strict:true}));
+  const normalJson=express.json({limit:'2mb',strict:true}),integrationJson=express.json({limit:'8mb',strict:true});
+  app.use((req,res,next)=>req.path==='/v1/cham-cong/write'
+    ? auth.integration(req,res,()=>integrationJson(req,res,next)) : normalJson(req,res,next));
   app.use('/admin',auth.csrf);
   app.post('/admin/login',auth.login);
   app.use('/admin',auth.admin);
@@ -49,6 +52,9 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     if(!r.affectedRows)throw new Fault(409,'JOB_NOT_RETRYABLE');res.json({ok:true});
   });
   app.use('/v1',auth.integration);
+  app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
+  app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));
+  app.post('/v1/cham-cong/write',async(req,res)=>res.json(await chamCong.writeRows(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
   app.post('/v1/batch',async(req,res)=>res.json(await mutate(pool,req.body)));
   app.get('/v1/requests/:id',async(req,res)=>{
     const [[r]]=await pool.query('SELECT response FROM requests WHERE id=?',[req.params.id]);

@@ -11,7 +11,7 @@ export async function mutate(pool, input) {
     const result=[];
     // Stable locking order across batches prevents inter-record deadlocks.
     for(const op of [...batch.operations].sort((a,b)=>(a.entity+'\0'+a.id).localeCompare(b.entity+'\0'+b.id))) {
-      const [[entity]]=await db.query('SELECT * FROM entities WHERE name=? FOR SHARE',[op.entity]);
+      const [[entity]]=await db.query('SELECT * FROM entities WHERE name=? FOR UPDATE',[op.entity]);
       if(!entity) throw new Fault(404,'ENTITY_NOT_FOUND');
       if(entity.bootstrap_state!=='ready') throw new Fault(409,'IMPORT_REQUIRED','Cần nhập dữ liệu lần đầu trước khi ghi.');
       const headers=json(entity.headers);
@@ -20,6 +20,8 @@ export async function mutate(pool, input) {
       if(op.action==='create') {
         const [[mapping]]=await db.query('SELECT id FROM row_map WHERE entity=? AND id=?',[op.entity,op.id]);
         if(current||mapping) throw new Fault(409,'ID_EXISTS','ID đã tồn tại hoặc đã được lưu trữ.');
+        await db.query('INSERT INTO row_map(entity,id,sheet_row) VALUES(?,?,?)',[op.entity,op.id,entity.next_row]);
+        await db.query('UPDATE entities SET next_row=next_row+1 WHERE name=?',[op.entity]);
       } else {
         if(!current||current.deleted_at) throw new Fault(404,'RECORD_NOT_FOUND');
         if(Number(current.version)!==op.expectedVersion) throw new Fault(409,'VERSION_CONFLICT','Bản ghi đã thay đổi.',publicRecord(current));

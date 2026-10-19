@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {Fault,backoff,retryable,json,metadataHeaders,tabRange,columnName} from './core.js';
+import {Fault,backoff,retryable,json,metadataHeaders,tabRange,columnName,digest} from './core.js';
 import {exclusive,transaction} from './db.js';
 import {getSettings} from './settings.js';
 import {Sheets} from './sheets.js';
@@ -50,6 +50,15 @@ export async function importPage(pool,entity,sheets) {
       await db.query('INSERT IGNORE INTO row_map(entity,id,sheet_row) VALUES(?,?,?)',[entity.name,r.id,start+i]);
       await db.query(`INSERT IGNORE INTO records(entity,id,data,version,synced_version,dirty,business_at,finalized_at,updated_at,deleted_at)
         VALUES(?,?,?,?,?,0,?,?,UTC_TIMESTAMP(3),?)`,[entity.name,r.id,JSON.stringify(r.data),r.version,r.version,r.businessAt,r.finalizedAt,r.deletedAt]);
+      const prefix={CoffeeQuality:'qc_rev_',DailyReports:'dr_rev_',ReferenceData:'ref_rev_'}[entity.name];
+      const scope=entity.name==='ReferenceData'?r.data.Key:r.data.RecordID;
+      if(prefix&&scope&&r.data.Revision!==undefined&&sheets.config?.spreadsheetId){
+        const name=digest(sheets.config.spreadsheetId+'\0'+entity.name+'\0'+prefix+digest(scope+':'+r.data.Revision));
+        const owner='import:'+digest(entity.name+'\0'+r.id);
+        await db.query('INSERT IGNORE INTO record_guards(name,request_id) VALUES(?,?)',[name,owner]);
+        const [[existing]]=await db.query('SELECT request_id FROM record_guards WHERE name=?',[name]);
+        if(existing.request_id!==owner)throw new Fault(422,'IMPORT_REVISION_CONFLICT');
+      }
     }
     const done=values.length<limit;
     await db.query('UPDATE entities SET import_row=?,next_row=GREATEST(next_row,?),bootstrap_state=?,last_error=NULL WHERE name=?',
