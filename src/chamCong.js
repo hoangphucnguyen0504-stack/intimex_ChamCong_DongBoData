@@ -42,14 +42,14 @@ function readLookup(query,headers){
   if(status&&status!=='ON_SITE')throw new Fault(400,'INVALID_PAGE');
   if(normalized&&(status!=='ON_SITE'||!/^[A-Z0-9]{1,40}$/.test(value||'')))throw new Fault(400,'INVALID_PAGE');
   if(id&&column)throw new Fault(400,'INVALID_PAGE');
-  if(id)return {sql:'SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.id=? LIMIT 2',args:[id]};
+  if(id)return {single:true,sql:'SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.id=? LIMIT 2',args:[id]};
   const cell=normalized
     ?`REGEXP_REPLACE(UPPER(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.${column}'))),'[^A-Z0-9]','')`
     :`JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.${column}'))`;
   let sql=`SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND ${cell}=?`;
   const args=[value];
   if(status){sql+=" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Status'))=?";args.push(status);}
-  return {sql:sql+' ORDER BY m.sheet_row LIMIT 20',args};
+  return {single:false,sql:sql+' ORDER BY m.sheet_row LIMIT 101',args};
 }
 export async function readRows(pool,key,entity,query){
   await assertBinding(pool,key,query.spreadsheetId);
@@ -65,7 +65,9 @@ export async function readRows(pool,key,entity,query){
   if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
   if(lookup){
     const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
-    return {ok:true,headers,rows:found.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:false,nextAfter:null};
+    const more=!lookup.single&&found.length>100;
+    const kept=more?found.slice(0,100):found;
+    return {ok:true,headers,rows:kept.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:more,nextAfter:null};
   }
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
