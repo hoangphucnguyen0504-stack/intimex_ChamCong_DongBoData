@@ -127,4 +127,8 @@ test('record id and one column do not page the whole sheet',async()=>{
  assert.equal(lookup.args[1],'TAI XE');
  assert.equal(lookup.args[2],'ON_SITE');
  assert.equal(named.rows[0][2],'TAI XE');
+ const setting=await readRows(f.pool,key,'Attendance',{spreadsheetId,id:'security.adminIdleMinutes'});
+ assert.equal(setting.ok,true);
+ assert.equal(f.calls.some(c=>c.args.includes('security.adminIdleMinutes')),true);
+ await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,id:'bad\nid'}),{code:'INVALID_PAGE'});
 });

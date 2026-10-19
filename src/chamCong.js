@@ -34,7 +34,8 @@ function readLookup(query,headers){
   const status=query.status==null||query.status===''?null:String(query.status);
   const normalized=query.normalized==='1';
   if(!id&&!column&&!value&&!status&&!normalized)return null;
-  if(id&&!/^[A-Za-z0-9_-]{1,80}$/.test(id))throw new Fault(400,'INVALID_PAGE');
+  // Mã cài đặt có dấu chấm, ví dụ company.address và security.adminIdleMinutes.
+  if(id&&(id.length>191||/[\x00-\x1f\x7f]/.test(id)))throw new Fault(400,'INVALID_PAGE');
   if(column&&(!/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(column)||!headers.includes(column)))throw new Fault(400,'INVALID_PAGE');
   if((column==null)!==(value==null))throw new Fault(400,'INVALID_PAGE');
   if(value&&(value.length>180||/[\x00-\x1f\x7f]/.test(value)))throw new Fault(400,'INVALID_PAGE');
