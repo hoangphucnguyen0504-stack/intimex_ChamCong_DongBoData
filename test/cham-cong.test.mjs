@@ -56,6 +56,14 @@ test('ids view returns record ids and does not select json data',async()=>{
  assert.equal(query.args.at(-1),50001);
  assert.deepEqual(page,{ok:true,headers,rows:[['ATT-1'],['ATT-2']],upper:19,hasMore:false,nextAfter:null});
 });
+test('state key reads one Key column instead of the whole sheet',async()=>{
+ const f=readPool([{id:'AST-1',data:JSON.stringify({ID:'AST-1',Key:'runtime-config',Value:'{}'}),sheet_row:2}]);
+ await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'runtime-config'});
+ const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
+ assert.equal(query.sql.includes("JSON_EXTRACT(r.data, '$.Key')"),true);
+ assert.equal(query.args.at(-2),'runtime-config');
+ await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'bad key'}),{code:'INVALID_PAGE'});
+});
 test('limit above 50000 is an invalid page',async()=>{
  const f=fixture();
  await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,limit:50001}),{code:'INVALID_PAGE'});

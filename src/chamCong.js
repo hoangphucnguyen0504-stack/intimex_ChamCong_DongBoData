@@ -33,11 +33,13 @@ export async function readRows(pool,key,entity,query){
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
   if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
   const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids';
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids))throw new Fault(400,'INVALID_PAGE');
+  const stateKey=query.key==null||query.key===''?null:String(query.key);
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,180}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
+  const keyFilter=stateKey?" AND JSON_UNQUOTE(JSON_EXTRACT(r.data, '$.Key'))=?":'';
   const [candidates]=await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
-    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,[entity,after,upper,limit+1]);
+    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`,stateKey?[entity,after,upper,stateKey,limit+1]:[entity,after,upper,limit+1]);
   const selected=[];let bytes=0;
   for(const row of candidates){
     if(selected.length>=limit)break;
