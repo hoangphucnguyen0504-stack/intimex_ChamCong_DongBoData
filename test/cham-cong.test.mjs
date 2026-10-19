@@ -67,6 +67,10 @@ test('state key reads only the latest revision of that key',async()=>{
  assert.equal(query.args.at(-3),'runtime-config');
  assert.equal(query.args.at(-2),'rev-9');
  await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'bad key'}),{code:'INVALID_PAGE'});
+ const longKey='@state/gate/submission-cooldown/'+'sheet'.repeat(11)+'/VEHICLE_IN/'+'a'.repeat(64)+'/'+'b'.repeat(64);
+ const longPage=await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:longKey});
+ assert.equal(longPage.ok,true);
+ await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'k'.repeat(513)}),{code:'INVALID_PAGE'});
 });
 test('limit above 50000 is an invalid page',async()=>{
  const f=fixture();
@@ -109,4 +113,18 @@ test('batch write preloads rows once in sorted id order',async()=>{
  assert.deepEqual(records[0].args,['Attendance','ATT-1','ATT-2']);
  assert.deepEqual(maps[0].args,['Attendance','ATT-1','ATT-2']);
  assert.equal(f.calls.filter(c=>c.sql.startsWith('INSERT INTO records')).length,2);
+});
+test('record id and one column do not page the whole sheet',async()=>{
+ const data=JSON.stringify({ID:'TRP-1',CreatedAt:'2026-10-20T02:00:00Z',FullName:'TAI XE'});
+ const f=readPool([{id:'TRP-1',data,sheet_row:4}]);
+ const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,id:'TRP-1'});
+ assert.equal(page.rows[0][0],'TRP-1');
+ assert.equal(f.calls.some(c=>c.sql.includes('r.id=?')&&c.args[1]==='TRP-1'),true);
+ assert.equal(f.calls.some(c=>c.sql.includes('LIMIT ?')),false);
+ await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,column:'Missing',value:'A'}),{code:'INVALID_PAGE'});
+ const named=await readRows(f.pool,key,'Attendance',{spreadsheetId,column:'FullName',value:'TAI XE',status:'ON_SITE'});
+ const lookup=f.calls.find(c=>c.sql.includes('$.FullName'));
+ assert.equal(lookup.args[1],'TAI XE');
+ assert.equal(lookup.args[2],'ON_SITE');
+ assert.equal(named.rows[0][2],'TAI XE');
 });

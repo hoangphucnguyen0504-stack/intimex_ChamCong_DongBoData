@@ -26,6 +26,30 @@ export async function status(pool,key,spreadsheetId){
   return {ok:true,protocol:'cham-cong-v1',ready:entities.length>0&&entities.every(e=>e.bootstrap_state==='ready'&&Number(e.unmapped)===0),
     entities:entities.map(e=>({...e,headers:json(e.headers)}))};
 }
+// Đọc một dòng theo mã hoặc một cột, không tải cả bảng.
+function readLookup(query,headers){
+  const id=query.id==null||query.id===''?null:String(query.id);
+  const column=query.column==null||query.column===''?null:String(query.column);
+  const value=query.value==null||query.value===''?null:String(query.value);
+  const status=query.status==null||query.status===''?null:String(query.status);
+  const normalized=query.normalized==='1';
+  if(!id&&!column&&!value&&!status&&!normalized)return null;
+  if(id&&!/^[A-Za-z0-9_-]{1,80}$/.test(id))throw new Fault(400,'INVALID_PAGE');
+  if(column&&(!/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(column)||!headers.includes(column)))throw new Fault(400,'INVALID_PAGE');
+  if((column==null)!==(value==null))throw new Fault(400,'INVALID_PAGE');
+  if(value&&(value.length>180||/[\x00-\x1f\x7f]/.test(value)))throw new Fault(400,'INVALID_PAGE');
+  if(status&&status!=='ON_SITE')throw new Fault(400,'INVALID_PAGE');
+  if(normalized&&(status!=='ON_SITE'||!/^[A-Z0-9]{1,40}$/.test(value||'')))throw new Fault(400,'INVALID_PAGE');
+  if(id&&column)throw new Fault(400,'INVALID_PAGE');
+  if(id)return {sql:'SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.id=? LIMIT 2',args:[id]};
+  const cell=normalized
+    ?`REGEXP_REPLACE(UPPER(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.${column}'))),'[^A-Z0-9]','')`
+    :`JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.${column}'))`;
+  let sql=`SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND ${cell}=?`;
+  const args=[value];
+  if(status){sql+=" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Status'))=?";args.push(status);}
+  return {sql:sql+' ORDER BY m.sheet_row LIMIT 20',args};
+}
 export async function readRows(pool,key,entity,query){
   await assertBinding(pool,key,query.spreadsheetId);
   const [[e]]=await pool.query('SELECT * FROM entities WHERE name=?',[entity]);
@@ -34,7 +58,14 @@ export async function readRows(pool,key,entity,query){
   if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
   const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids';
   const stateKey=query.key==null||query.key===''?null:String(query.key);
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,180}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
+  const headers=json(e.headers);
+  const lookup=readLookup(query,headers);
+  // Khóa cooldown của xe container dài hơn 180 ký tự: @state/.../<sheet>/<loại>/<hash SĐT>/<hash container>.
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
+  if(lookup){
+    const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
+    return {ok:true,headers,rows:found.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:false,nextAfter:null};
+  }
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
   let revision=null;
@@ -59,7 +90,7 @@ export async function readRows(pool,key,entity,query){
     if(selected.length&&bytes+size>7000000)break;
     selected.push(row);bytes+=size;
   }
-  const headers=json(e.headers),hasMore=candidates.length>selected.length;
+  const hasMore=candidates.length>selected.length;
   return {ok:true,headers,rows:ids?selected.map(r=>[r.id]):selected.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
     hasMore,nextAfter:hasMore?selected.at(-1).sheet_row:null};
 }
