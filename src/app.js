@@ -55,7 +55,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     const [r]=await pool.query("UPDATE jobs SET state='pending',attempts=0,error_code=NULL,available_at=UTC_TIMESTAMP(3) WHERE id=? AND state='needs_review'",[req.params.id]);
     if(!r.affectedRows)throw new Fault(409,'JOB_NOT_RETRYABLE');res.json({ok:true});
   });
-  mountChatboxRead(app,pool,config,{track:accessActivity.track('api')});
+  mountChatboxRead(app,pool,config,{track:accessActivity.track('chatbox')});
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));

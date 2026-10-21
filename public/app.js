@@ -17,7 +17,8 @@ async function refresh(initial=false) {
   try {
     const s=await api('/admin/status');lastStatus=s;
     const connectionLabels={unseen:'Chưa ghi nhận kết nối',recent:'Vừa kết nối thành công',idle:'Chưa có truy cập gần đây',error:'Yêu cầu gần nhất bị lỗi',requesting:'Đang xử lý yêu cầu'};
-    table('#backend-connections',s.accessActivity?.connections||[],r=>[r.client==='cham-cong-backend'?'Backend chấm công':'HDoi worker',connectionLabels[r.state]||r.state,date(r.lastRequestAt),date(r.lastSuccessAt),date(r.lastFailureAt),r.status||'—',r.requests||0]);
+    const serviceNames={'cham-cong-backend':'Backend chấm công','hdoi-worker':'HDoi worker','chatbox-read-only':'ChatBox (chỉ đọc)'};
+    table('#backend-connections',s.accessActivity?.connections||[],r=>[serviceNames[r.client]||r.client,connectionLabels[r.state]||r.state,date(r.lastRequestAt),date(r.lastSuccessAt),date(r.lastFailureAt),r.status||'-',r.requests||0]);
     $('#access-scope').textContent=s.accessActivity?.scope||'Chưa có thông tin truy cập.';
     table('#access-activity',s.accessActivity?.items||[],r=>[r.account,r.connection,r.active?'Vừa hoạt động (< 60 giây)':'Gần đây',r.resource||r.operation,r.method+(r.status?' · '+r.status:''),r.requests,date(r.lastSeen)]);
     const pending=s.entities.reduce((sum,e)=>sum+Number(e.pending),0),total=s.entities.reduce((sum,e)=>sum+Number(e.total),0);
