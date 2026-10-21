@@ -7,6 +7,7 @@ const schema = z.object({
   PUBLIC_ORIGIN:z.url(), COOKIE_SECURE:z.enum(['true','false']).default('true'),
   ADMIN_USERNAME:z.string().min(1), ADMIN_PASSWORD_HASH:z.string().regex(/^[a-f0-9]{32}:[a-f0-9]{128}$/),
   SESSION_SECRET:z.string().min(48), API_TOKEN:z.string().min(48), CONFIG_ENCRYPTION_KEY:z.string().regex(/^[a-f0-9]{64}$/),
+  CHATBOX_READ_TOKEN:z.string().min(48).optional(),
   MYSQL_HOST:z.string().min(1), MYSQL_PORT:z.coerce.number().int().default(3306),MYSQL_DATABASE:z.string().min(1),
   MYSQL_USER:z.string().min(1),MYSQL_PASSWORD:z.string().min(1),MYSQL_SSL:z.enum(['true','false']).default('false'),
   MYSQL_POOL_SIZE:z.coerce.number().int().min(2).max(30).default(6),

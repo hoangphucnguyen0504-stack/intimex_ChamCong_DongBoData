@@ -12,6 +12,7 @@ import {quotaGate} from './quota.js';
 import {archivedPage} from './archive.js';
 import * as chamCong from './chamCong.js';
 import {createAccessActivity} from './accessActivity.js';
+import {mountChatboxRead} from './chatboxRead.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   const accessActivity=createAccessActivity();
@@ -54,6 +55,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     const [r]=await pool.query("UPDATE jobs SET state='pending',attempts=0,error_code=NULL,available_at=UTC_TIMESTAMP(3) WHERE id=? AND state='needs_review'",[req.params.id]);
     if(!r.affectedRows)throw new Fault(409,'JOB_NOT_RETRYABLE');res.json({ok:true});
   });
+  mountChatboxRead(app,pool,config,{track:accessActivity.track('api')});
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));
