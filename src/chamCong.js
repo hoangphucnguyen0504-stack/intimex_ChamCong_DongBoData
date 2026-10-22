@@ -2,6 +2,8 @@ import {z} from 'zod';
 import {Fault,entityName,recordId,digest,stable,json,compactReceipt} from './core.js';
 import {transaction} from './db.js';
 import {getSettings} from './settings.js';
+import compatibility from './schemaCompatibility.cjs';
+const {compatibleHeaders}=compatibility;
 const mappedClean=new Map();
 async function assertMapped(pool,entity){
   if((mappedClean.get(entity)||0)>Date.now())return;
@@ -111,7 +113,7 @@ export async function writeRows(pool,key,input){
     if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
     if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED');
     const headers=json(e.headers);
-    if(JSON.stringify(headers)!==JSON.stringify(body.headers))throw new Fault(409,'ENTITY_SCHEMA_MISMATCH','Danh sách cột hai dự án khác nhau; cần đối chiếu trước khi ghi.');
+    if(!compatibleHeaders(body.entity,headers,body.headers))throw new Fault(409,'ENTITY_SCHEMA_MISMATCH','Danh sách cột hai dự án khác nhau; cần đối chiếu trước khi ghi.');
     for(const guard of body.guards){
       const guardKey=digest(body.spreadsheetId+'\0'+body.entity+'\0'+guard);
       try{await db.query('INSERT INTO record_guards(name,request_id) VALUES(?,?)',[guardKey,body.requestId]);}
@@ -123,10 +125,11 @@ export async function writeRows(pool,key,input){
     const [mappings]=await db.query(`SELECT * FROM row_map WHERE entity=? AND id IN (${marks})`,[body.entity,...ids]);
     const oldById=new Map(existing.map(row=>[row.id,row])),mapById=new Map(mappings.map(row=>[row.id,row]));
     for(const c of body.changes){
-      if(c.rowValues.length>headers.length||(c.op!=='delete'&&String(c.rowValues[headers.indexOf('ID')])!==c.recordId))throw new Fault(400,'INVALID_ROW_ID');
+      if(c.rowValues.length>body.headers.length||(c.op!=='delete'&&String(c.rowValues[body.headers.indexOf('ID')])!==c.recordId))throw new Fault(400,'INVALID_ROW_ID');
       const old=oldById.get(c.recordId),mapping=mapById.get(c.recordId);
       if(!old&&mapping?.archived_at)throw new Fault(410,'RECORD_ARCHIVED','Không ghi đè bản ghi đã lưu trữ.');
-      const next={...(old?json(old.data):{}),...Object.fromEntries(headers.map((h,i)=>[h,c.rowValues[i]??''])),ID:c.recordId};
+      const previous=old?json(old.data):{},patch=Object.fromEntries(body.headers.map((h,i)=>[h,c.rowValues[i]??'']));
+      const next={...previous,...patch,...(body.headers.length<headers.length?compatibility.legacySealPatch(body.entity,previous,patch):{}),ID:c.recordId};
       if(c.op==='delete'&&(!old||old.deleted_at))continue;
       if(old?.deleted_at)throw new Fault(409,'RECORD_DELETED');
       // Phiên cân và cấu hình dùng mã cố định. Lần ghi sau cập nhật đúng dòng đó, không thêm bản sao.

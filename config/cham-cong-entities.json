@@ -159,7 +159,9 @@
       "EstimatedBagCount",
       "BagType",
       "GateConfirmedBy",
-      "GateCorrectionReason"
+      "GateCorrectionReason",
+      "Seal",
+      "Seal2"
     ],
     "retentionDays": 7
   },
@@ -286,7 +288,9 @@
       "EstimatedBagCount",
       "BagType",
       "GateConfirmedBy",
-      "GateCorrectionReason"
+      "GateCorrectionReason",
+      "Seal",
+      "Seal2"
     ],
     "retentionDays": 7
   },

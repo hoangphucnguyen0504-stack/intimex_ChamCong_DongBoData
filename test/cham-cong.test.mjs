@@ -4,21 +4,31 @@ import {writeRows,readRows} from '../src/chamCong.js';
 import {encrypt} from '../src/core.js';
 const key='1'.repeat(64),spreadsheetId='fixture-sheet-1234567890',headers=['ID','CreatedAt','FullName'];
 const body={spreadsheetId,entity:'Attendance',headers,requestId:'integration-request-1',changes:[{op:'append',recordId:'ATT-1',rowValues:['ATT-1','2026-10-19T01:00:00Z','Name']}],guards:['guard_revision']};
-function fixture(){
+function fixture({entity='Attendance',entityHeaders=headers,existing=[]}={}){
  const calls=[],receipts=new Map();let guardExists=false;
  const query=async(sql,args=[])=>{
   calls.push({sql,args});if(sql.includes('SELECT encrypted'))return [[{encrypted:encrypt({spreadsheetId},key)}]];
   if(sql.startsWith('INSERT IGNORE INTO requests')){if(!receipts.has(args[0]))receipts.set(args[0],{fingerprint:args[1],response:null});return [{}];}
   if(sql.startsWith('SELECT * FROM requests'))return [[receipts.get(args[0])]];
   if(sql.startsWith('UPDATE requests')){receipts.get(args[1]).response=args[0];return [{}];}
-  if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Attendance',headers,bootstrap_state:'ready',next_row:5}]];
-  if(sql.startsWith('SELECT * FROM records')||sql.startsWith('SELECT * FROM row_map'))return [[]];
+  if(sql.startsWith('SELECT * FROM entities'))return [[{name:entity,headers:entityHeaders,bootstrap_state:'ready',next_row:5}]];
+  if(sql.startsWith('SELECT * FROM records'))return [existing];
+  if(sql.startsWith('SELECT * FROM row_map'))return [existing.map(row=>({id:row.id,sheet_row:2}))];
   if(sql.startsWith('INSERT INTO record_guards')){if(guardExists)throw Object.assign(Error('duplicate'),{code:'ER_DUP_ENTRY'});guardExists=true;return [{}];}
   return [{}];
  };
  const conn={query,beginTransaction:async()=>{},commit:async()=>{},rollback:async()=>{},release:()=>{}};
  return {calls,pool:{query,getConnection:async()=>conn}};
 }
+test('old queued vehicle updates preserve newer Seal fields after additive schema upgrade',async()=>{
+ const legacy=['ID','CreatedAt','Container'],current=[...legacy,'Seal','Seal2'];
+ const f=fixture({entity:'VehicleTrips',entityHeaders:current,existing:[{id:'TRIP-1',version:2,data:{ID:'TRIP-1',Container:'CONT1',Seal:'KEEP',Seal2:'KEEP2'}}]});
+ await writeRows(f.pool,key,{spreadsheetId,entity:'VehicleTrips',headers:legacy,requestId:'legacy-update-request',changes:[{op:'update',recordId:'TRIP-1',rowValues:['TRIP-1','','CONT1']}],guards:[]});
+ const saved=JSON.parse(f.calls.find(call=>call.sql.startsWith('INSERT INTO records')).args[2]);
+ assert.equal(saved.Seal,'KEEP');assert.equal(saved.Seal2,'KEEP2');
+ const unsafe={spreadsheetId,entity:'VehicleTrips',headers:['ID','Changed'],requestId:'unsafe-request',changes:[{op:'update',recordId:'TRIP-1',rowValues:['TRIP-1','x']}],guards:[]};
+ await assert.rejects(()=>writeRows(f.pool,key,unsafe),{code:'ENTITY_SCHEMA_MISMATCH'});
+});
 test('integration replay keeps one mutation and reserves its row before acknowledging',async()=>{
  const f=fixture(),one=await writeRows(f.pool,key,body),two=await writeRows(f.pool,key,body);
  assert(one.durable&&two.durable);assert(two.replayed);assert.equal(f.calls.filter(c=>c.sql.startsWith('INSERT INTO records')).length,1);
