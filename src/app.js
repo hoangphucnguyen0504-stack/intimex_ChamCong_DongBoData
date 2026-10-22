@@ -13,6 +13,7 @@ import {archivedPage} from './archive.js';
 import * as chamCong from './chamCong.js';
 import {createAccessActivity} from './accessActivity.js';
 import {mountChatboxRead} from './chatboxRead.js';
+import {upsertImage,linkImage} from './images.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   const accessActivity=createAccessActivity();
@@ -21,8 +22,12 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.get('/health/live',(_req,res)=>res.json({ok:true}));
   app.get('/health/ready',async(_req,res)=>{try {await pool.query('SELECT 1');res.json({ok:true});}catch {res.status(503).json({ok:false});}});
   const normalJson=express.json({limit:'2mb',strict:true}),integrationJson=express.json({limit:'8mb',strict:true});
-  app.use((req,res,next)=>req.path==='/v1/cham-cong/write'
-    ? auth.integration(req,res,()=>integrationJson(req,res,next)) : normalJson(req,res,next));
+  const imageJson=express.json({limit:'16kb',strict:true});
+  app.use((req,res,next)=>{
+    if(['/v1/cham-cong/images/upsert','/v1/cham-cong/images/link'].includes(req.path))return auth.integration(req,res,()=>imageJson(req,res,next));
+    return req.path==='/v1/cham-cong/write'
+      ? auth.integration(req,res,()=>integrationJson(req,res,next)) : normalJson(req,res,next);
+  });
   app.use('/admin',auth.csrf);
   app.post('/admin/login',auth.login);
   app.use('/admin',auth.admin);
@@ -58,6 +63,8 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   mountChatboxRead(app,pool,config,{track:accessActivity.track('chatbox')});
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
+  app.post('/v1/cham-cong/images/upsert',async(req,res)=>res.json(await upsertImage(pool,req.body)));
+  app.post('/v1/cham-cong/images/link',async(req,res)=>res.json(await linkImage(pool,req.body)));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
   app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));

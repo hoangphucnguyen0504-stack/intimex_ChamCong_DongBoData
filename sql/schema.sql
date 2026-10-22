@@ -84,3 +84,30 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS login_limits (
  ip_hash CHAR(64) PRIMARY KEY, hits INT NOT NULL, expires_at DATETIME(3) NOT NULL
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS image_metadata (
+ namespace VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ image_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+ version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ fingerprint CHAR(64) NOT NULL DEFAULT '',
+ state VARCHAR(16) NULL,
+ drive_file_id VARCHAR(200) NULL,
+ mime VARCHAR(40) NULL,
+ size_bytes BIGINT UNSIGNED NULL,
+ checksum CHAR(64) NULL,
+ verified_at DATETIME(3) NULL,
+ updated_at DATETIME(3) NULL,
+ PRIMARY KEY(namespace,image_id)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS image_links (
+ namespace VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ record_id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+ field_name VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ slot SMALLINT UNSIGNED NOT NULL,
+ version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+ fingerprint CHAR(64) NOT NULL DEFAULT '',
+ image_id VARCHAR(128) COLLATE utf8mb4_bin NULL,
+ updated_at DATETIME(3) NULL,
+ PRIMARY KEY(namespace,entity,record_id,field_name,slot),
+ INDEX by_image(namespace,image_id)
+) ENGINE=InnoDB;
