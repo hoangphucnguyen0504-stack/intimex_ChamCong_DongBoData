@@ -9,7 +9,7 @@
 </main>
 <div id="application" hidden>
   <aside><div class="brand"><span class="brand-mark small">D↗</span><strong>DataĐồngBộ</strong></div><p class="aside-caption">TRUNG TÂM ĐIỀU PHỐI</p>
-    <nav aria-label="Điều hướng"><button data-tab="overview" class="active">Tổng quan</button><button data-tab="settings">Cấu hình đồng bộ</button><button data-tab="entities">Tài nguyên dữ liệu</button><button data-tab="connection">Kết nối chấm công</button></nav>
+    <nav aria-label="Điều hướng"><button data-tab="overview" class="active">Tổng quan</button><button data-tab="settings">Cấu hình đồng bộ</button><button data-tab="entities">Tài nguyên dữ liệu</button><button data-tab="connection">Kết nối chấm công</button><button data-tab="kinhdoanh">Kết nối Kinh Doanh</button></nav>
     <div class="aside-bottom"><span id="account"></span><button id="logout" class="ghost">Đăng xuất</button></div>
   </aside>
   <main class="workspace">
@@ -54,6 +54,78 @@ Authorization: Bearer &lt;API_TOKEN&gt;
     "id": "ATT-uuid", "data": {"FullName": "Nguyễn Văn A"}
   }]
 }</pre><p>Đọc dữ liệu: <code>GET /v1/entities/Attendance/records?limit=200</code>. Sửa/xóa gửi <code>expectedVersion</code>. Tra cứu kết quả khi mất phản hồi: <code>GET /v1/requests/:requestId</code>.</p><p>Việc tạo dịch vụ này chưa chuyển dự án chấm công hiện tại sang MySQL. Cần tích hợp adapter và kiểm thử nghiệp vụ trước khi chuyển nguồn dữ liệu.</p></div>
+    </section>
+    <section data-page="kinhdoanh" hidden>
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Cấu hình & Giám sát Kinh Doanh</h2>
+            <p class="muted">Kênh truy cập dữ liệu chỉ đọc (Read-Only) phục vụ hệ thống KinhDoanh đối soát và xác thực. Tuyệt đối không có quyền ghi.</p>
+          </div>
+          <div class="actions">
+            <button id="kinhdoanh-toggle-btn">Vô hiệu hóa tạm thời</button>
+            <button id="kinhdoanh-rotate-btn" class="ghost">Đổi Token mới</button>
+          </div>
+        </div>
+        <div class="stats">
+          <article><span>Trạng thái kết nối</span><strong id="kd-status-badge">—</strong><small id="kd-status-detail">Đang kiểm tra</small></article>
+          <article><span>Tổng lượt truy vấn</span><strong id="kd-total-reqs">0</strong><small id="kd-success-rate">Tỷ lệ thành công: 100%</small></article>
+          <article><span>Tốc độ hiện tại</span><strong id="kd-current-rpm">0</strong><small>req/phút (Tối đa: 120)</small></article>
+          <article><span>Độ trễ trung bình</span><strong id="kd-avg-latency">0 ms</strong><small id="kd-last-req">Chưa có truy vấn</small></article>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Nhật ký yêu cầu (Request Logs & Audit)</h2>
+            <p class="muted">Lưu vết an toàn: địa chỉ client ẩn danh, endpoint, thời gian xử lý và mã lỗi. Không lưu trữ token hay nội dung nhạy cảm.</p>
+          </div>
+          <div class="actions">
+            <select id="kd-log-filter">
+              <option value="">Tất cả trạng thái</option>
+              <option value="success">Chỉ thành công (2xx)</option>
+              <option value="error">Chỉ lỗi (4xx, 5xx)</option>
+            </select>
+            <button id="kd-refresh-logs" class="ghost">Làm mới</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Phương thức</th>
+                <th>Endpoint</th>
+                <th>Trạng thái</th>
+                <th>Độ trễ</th>
+                <th>Số bản ghi</th>
+                <th>Mã lỗi</th>
+              </tr>
+            </thead>
+            <tbody id="kd-logs-table"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Đặc tả API Read-Only cho KinhDoanh</h2>
+        <p class="muted">Tài liệu tích hợp chuẩn REST dành cho dịch vụ KinhDoanh:</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Endpoint (GET)</th><th>Mục đích nghiệp vụ</th><th>Tham số hỗ trợ</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>/v1/kinhdoanh/ping</code></td><td>Kiểm tra kết nối và tính sẵn sàng</td><td>—</td></tr>
+              <tr><td><code>/v1/kinhdoanh/capabilities</code></td><td>Danh sách tài nguyên và quyền hạn Read-Only</td><td>—</td></tr>
+              <tr><td><code>/v1/kinhdoanh/trips</code></td><td>Lấy danh sách chuyến xe (VehicleTrips)</td><td><code>from</code>, <code>to</code>, <code>plate</code>, <code>status</code>, <code>limit</code>, <code>after</code></td></tr>
+              <tr><td><code>/v1/kinhdoanh/weighed-sessions</code></td><td>Lấy các phiên đã cân lần 2 hợp lệ (InventoryLogs)</td><td><code>from</code>, <code>to</code>, <code>tripId</code>, <code>type</code>, <code>limit</code>, <code>after</code></td></tr>
+              <tr><td><code>/v1/kinhdoanh/coffee-quality</code></td><td>Kết quả KCS thực tế (CoffeeQuality)</td><td><code>from</code>, <code>to</code>, <code>tripId</code>, <code>recordId</code>, <code>limit</code>, <code>after</code></td></tr>
+              <tr><td><code>/v1/kinhdoanh/bm03-reports</code></td><td>Báo cáo phiếu kho BM03</td><td><code>from</code>, <code>to</code>, <code>orderCode</code>, <code>limit</code>, <code>after</code></td></tr>
+              <tr><td><code>/v1/kinhdoanh/sync/changes</code></td><td>Đồng bộ tăng dần với cursor (updated_at, id)</td><td><code>entity</code>, <code>since</code>, <code>afterId</code>, <code>limit</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
   </main>
 </div>

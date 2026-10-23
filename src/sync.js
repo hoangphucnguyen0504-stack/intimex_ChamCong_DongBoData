@@ -20,7 +20,7 @@ async function exclusiveJob(pool,kind,entity) {
     if(kind==='import'&&!entity)throw new Fault(400,'ENTITY_REQUIRED');
     const [[old]]=await db.query("SELECT id FROM jobs WHERE kind=? AND entity <=> ? AND state IN ('pending','retry','running') LIMIT 1",[kind,entity]);
     if(old)return {ok:true,id:old.id,existing:true};
-    const id=randomUUID();await db.query('INSERT INTO jobs(id,kind,entity) VALUES(?,?,?)',[id,kind,entity]);
+    const id=randomUUID();await db.query('INSERT INTO jobs(id,kind,entity,available_at,created_at) VALUES(?,?,?,UTC_TIMESTAMP(3),UTC_TIMESTAMP(3))',[id,kind,entity]);
     return {ok:true,id};
   });
 }
@@ -104,6 +104,7 @@ export async function cleanup(pool) {
     await db.query('DELETE FROM sessions WHERE expires_at<UTC_TIMESTAMP(3)');
     await db.query('DELETE FROM login_limits WHERE expires_at<UTC_TIMESTAMP(3)');
     await db.query("DELETE FROM sync_runs WHERE finished_at<UTC_TIMESTAMP(3)-INTERVAL 30 DAY LIMIT 200");
+    await db.query("DELETE FROM client_request_logs WHERE created_at<UTC_TIMESTAMP(3)-INTERVAL 30 DAY LIMIT 500");
     // Idempotency receipts deliberately retained; never expire while clients may retry.
     return rows.length;
   });

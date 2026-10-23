@@ -1,6 +1,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import {fileURLToPath} from 'node:url';
+import {randomBytes} from 'node:crypto';
 import {ZodError} from 'zod';
 import {Fault,entityName,recordId,json,publicRecord,tabRange,columnName} from './core.js';
 import {authFor} from './auth.js';
@@ -13,10 +14,13 @@ import {archivedPage} from './archive.js';
 import * as chamCong from './chamCong.js';
 import {createAccessActivity} from './accessActivity.js';
 import {mountChatboxRead} from './chatboxRead.js';
+import {mountKinhDoanhRead} from './kinhDoanhRead.js';
+import {createRequestLogger} from './requestLogger.js';
 import {upsertImage,linkImage} from './images.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   const accessActivity=createAccessActivity();
+  const requestLogger=createRequestLogger({pool});
   app.disable('x-powered-by');app.use(helmet());
   app.use((req,res,next)=>{res.set('Cache-Control','no-store');next();});
   app.get('/health/live',(_req,res)=>res.json({ok:true}));
@@ -60,7 +64,40 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     const [r]=await pool.query("UPDATE jobs SET state='pending',attempts=0,error_code=NULL,available_at=UTC_TIMESTAMP(3) WHERE id=? AND state='needs_review'",[req.params.id]);
     if(!r.affectedRows)throw new Fault(409,'JOB_NOT_RETRYABLE');res.json({ok:true});
   });
+  app.get('/admin/kinhdoanh/status',async(_req,res)=>{
+    res.json({
+      ok: true,
+      stats: requestLogger.getStats('kinhdoanh-read-only'),
+      config: {
+        enabled: config.KINHDOANH_READ_ENABLED !== 'false',
+        tokenConfigured: Boolean(config.KINHDOANH_READ_TOKEN && config.KINHDOANH_READ_TOKEN.length >= 48),
+        tokenPrefix: config.KINHDOANH_READ_TOKEN ? config.KINHDOANH_READ_TOKEN.slice(0, 8) + '...' : null,
+        maxPerMinute: Number(config.KINHDOANH_MAX_REQUESTS_PER_MINUTE) || 120,
+      }
+    });
+  });
+  app.get('/admin/kinhdoanh/logs',async(req,res)=>{
+    res.json({
+      ok: true,
+      logs: requestLogger.getLogs({
+        client: 'kinhdoanh-read-only',
+        status: req.query.status,
+        limit: req.query.limit,
+        afterId: req.query.afterId,
+      })
+    });
+  });
+  app.post('/admin/kinhdoanh/toggle',async(req,res)=>{
+    config.KINHDOANH_READ_ENABLED = req.body?.enabled ? 'true' : 'false';
+    res.json({ok: true, enabled: config.KINHDOANH_READ_ENABLED === 'true'});
+  });
+  app.post('/admin/kinhdoanh/rotate-token',async(_req,res)=>{
+    const newToken = randomBytes(32).toString('hex');
+    config.KINHDOANH_READ_TOKEN = newToken;
+    res.json({ok: true, token: newToken});
+  });
   mountChatboxRead(app,pool,config,{track:accessActivity.track('chatbox')});
+  mountKinhDoanhRead(app,pool,config,{track:accessActivity.track('kinhdoanh'),requestLogger});
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
   app.post('/v1/cham-cong/images/upsert',async(req,res)=>res.json(await upsertImage(pool,req.body)));

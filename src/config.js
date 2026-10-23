@@ -8,6 +8,9 @@ const schema = z.object({
   ADMIN_USERNAME:z.string().min(1), ADMIN_PASSWORD_HASH:z.string().regex(/^[a-f0-9]{32}:[a-f0-9]{128}$/),
   SESSION_SECRET:z.string().min(48), API_TOKEN:z.string().min(48), CONFIG_ENCRYPTION_KEY:z.string().regex(/^[a-f0-9]{64}$/),
   CHATBOX_READ_TOKEN:z.string().min(48).optional(),
+  KINHDOANH_READ_TOKEN:z.string().min(48).optional(),
+  KINHDOANH_READ_ENABLED:z.enum(['true','false']).default('true'),
+  KINHDOANH_MAX_REQUESTS_PER_MINUTE:z.coerce.number().int().min(10).max(600).default(120),
   MYSQL_HOST:z.string().min(1), MYSQL_PORT:z.coerce.number().int().default(3306),MYSQL_DATABASE:z.string().min(1),
   MYSQL_USER:z.string().min(1),MYSQL_PASSWORD:z.string().min(1),MYSQL_SSL:z.enum(['true','false']).default('false'),
   MYSQL_POOL_SIZE:z.coerce.number().int().min(2).max(30).default(6),
@@ -16,7 +19,9 @@ const schema = z.object({
   BOOTSTRAP_ENTITIES_FILE:z.string().optional(),
   SYNC_INTERVAL_MINUTES:z.coerce.number().int().min(1).max(1440).default(60),
   SYNC_BATCH_SIZE:z.coerce.number().int().min(1).max(200).default(100),
-  SYNC_ENABLED:z.enum(['true','false']).default('false')
+  SYNC_ENABLED:z.enum(['true','false']).default('false'),
+  SANXUAT_API_URL:z.url().optional(),
+  KINHDOANH_API_URL:z.url().optional()
 });
 export function loadConfig(env = process.env) {
   const r = schema.safeParse(env);
@@ -24,5 +29,7 @@ export function loadConfig(env = process.env) {
   const c = r.data;
   if(new URL(c.PUBLIC_ORIGIN).origin !== c.PUBLIC_ORIGIN) throw Error('PUBLIC_ORIGIN chỉ gồm protocol và hostname/port');
   if(c.PUBLIC_ORIGIN.startsWith('https:') && c.COOKIE_SECURE !== 'true') throw Error('HTTPS cần COOKIE_SECURE=true');
+  if(!c.KINHDOANH_API_URL && c.SANXUAT_API_URL) c.KINHDOANH_API_URL = c.SANXUAT_API_URL;
+  if(!c.SANXUAT_API_URL && c.KINHDOANH_API_URL) c.SANXUAT_API_URL = c.KINHDOANH_API_URL;
   return c;
 }

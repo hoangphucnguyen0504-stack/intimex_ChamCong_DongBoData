@@ -111,3 +111,18 @@ CREATE TABLE IF NOT EXISTS image_links (
  PRIMARY KEY(namespace,entity,record_id,field_name,slot),
  INDEX by_image(namespace,image_id)
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS client_request_logs (
+ id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ client VARCHAR(64) NOT NULL,
+ fingerprint CHAR(16) NOT NULL,
+ method VARCHAR(10) NOT NULL,
+ path VARCHAR(200) NOT NULL,
+ status INT NOT NULL,
+ duration_ms INT NOT NULL,
+ records_count INT NOT NULL DEFAULT 0,
+ error_code VARCHAR(64) NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ INDEX idx_client_time (client, created_at),
+ INDEX idx_status_time (status, created_at)
+) ENGINE=InnoDB;
+

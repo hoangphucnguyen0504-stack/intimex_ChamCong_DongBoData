@@ -17,7 +17,7 @@ async function refresh(initial=false) {
   try {
     const s=await api('/admin/status');lastStatus=s;
     const connectionLabels={unseen:'Chưa ghi nhận kết nối',recent:'Vừa kết nối thành công',idle:'Chưa có truy cập gần đây',error:'Yêu cầu gần nhất bị lỗi',requesting:'Đang xử lý yêu cầu'};
-    const serviceNames={'cham-cong-backend':'Backend chấm công','hdoi-worker':'HDoi worker','chatbox-read-only':'ChatBox (chỉ đọc)'};
+    const serviceNames={'cham-cong-backend':'Backend chấm công','hdoi-worker':'HDoi worker','chatbox-read-only':'ChatBox (chỉ đọc)','kinhdoanh-read-only':'KinhDoanh (chỉ đọc)'};
     table('#backend-connections',s.accessActivity?.connections||[],r=>[serviceNames[r.client]||r.client,connectionLabels[r.state]||r.state,date(r.lastRequestAt),date(r.lastSuccessAt),date(r.lastFailureAt),r.status||'-',r.requests||0]);
     $('#access-scope').textContent=s.accessActivity?.scope||'Chưa có thông tin truy cập.';
     table('#access-activity',s.accessActivity?.items||[],r=>[r.account,r.connection,r.active?'Vừa hoạt động (< 60 giây)':'Gần đây',r.resource||r.operation,r.method+(r.status?' · '+r.status:''),r.requests,date(r.lastSeen)]);
@@ -36,8 +36,54 @@ async function refresh(initial=false) {
     if(!s.entities.length)container.textContent='Chưa có tài nguyên. Hãy thêm tài nguyên trước.';
     for(const e of s.entities){const row=document.createElement('div');row.className='entity-action';const info=document.createElement('span');info.textContent=`${e.name} → ${e.tab_name} · ${labels[e.bootstrap_state]} · lưu ${e.retention_days?e.retention_days+' ngày':'vĩnh viễn'}`;row.append(info);
       if(e.bootstrap_state!=='ready')row.append(button('Nhập từ Sheets',async()=>{if(!confirm(`Nhập dữ liệu tab ${e.tab_name} vào MySQL? Không ghi đè dữ liệu đã nhập.`))return;await api('/admin/jobs',{method:'POST',body:JSON.stringify({kind:'import',entity:e.name})});notice('Đã lưu tác vụ nhập. Theo dõi tiến độ ở Tổng quan.');await refresh();}));container.append(row);}
+    if(!$('[data-page="kinhdoanh"]').hidden)await refreshKinhDoanh();
   }catch(e){notice('Chưa cập nhật được trạng thái: '+e.message,true);}finally{refreshing=false;$('#loading').hidden=true;}
 }
+async function refreshKinhDoanh(){
+  try{
+    const s=await api('/admin/kinhdoanh/status');const enabled=s.config?.enabled;
+    const badgeEl=$('#kd-status-badge');
+    badgeEl.textContent=enabled?'Đang hoạt động':'Đã vô hiệu hóa';
+    badgeEl.className=enabled?'date-value':'badge error';
+    $('#kd-status-detail').textContent=s.config?.tokenConfigured?`Token: ${s.config.tokenPrefix||'Đã cấp'}`:'Chưa cấu hình token';
+    $('#kinhdoanh-toggle-btn').textContent=enabled?'Vô hiệu hóa tạm thời':'Kích hoạt lại kết nối';
+    const st=s.stats||{};
+    $('#kd-total-reqs').textContent=(st.totalRequests||0).toLocaleString('vi-VN');
+    $('#kd-success-rate').textContent=`Tỷ lệ thành công: ${st.successRate||'100%'}`;
+    $('#kd-current-rpm').textContent=st.currentRequestsPerMinute||0;
+    $('#kd-avg-latency').textContent=`${st.avgLatencyMs||0} ms`;
+    $('#kd-last-req').textContent=st.lastRequestAt?`Truy vấn cuối: ${date(st.lastRequestAt)}`:'Chưa có truy vấn';
+    await loadKinhDoanhLogs();
+  }catch(e){notice('Không thể tải trạng thái Kinh Doanh: '+e.message,true);}
+}
+async function loadKinhDoanhLogs(){
+  const filter=$('#kd-log-filter')?.value||'';
+  const r=await api('/admin/kinhdoanh/logs'+(filter?`?status=${filter}`:''));
+  table('#kd-logs-table',r.logs||[],log=>[
+    date(log.at),
+    log.method,
+    log.path,
+    badge(log.status>=200&&log.status<400?'success':'failed'),
+    `${log.durationMs} ms`,
+    log.recordsCount??'—',
+    log.errorCode||'—'
+  ]);
+}
+$('#kinhdoanh-toggle-btn').addEventListener('click',()=>busy($('#kinhdoanh-toggle-btn'),async()=>{
+  const current=$('#kinhdoanh-toggle-btn').textContent.includes('Vô hiệu hóa');
+  await api('/admin/kinhdoanh/toggle',{method:'POST',body:JSON.stringify({enabled:!current})});
+  notice(current?'Đã tạm khóa kết nối KinhDoanh.':'Đã kích hoạt lại kết nối KinhDoanh.');
+  await refreshKinhDoanh();
+}));
+$('#kinhdoanh-rotate-btn').addEventListener('click',()=>busy($('#kinhdoanh-rotate-btn'),async()=>{
+  if(!confirm('Đổi Token chỉ đọc cho KinhDoanh? Token cũ sẽ lập tức mất hiệu lực.'))return;
+  const r=await api('/admin/kinhdoanh/rotate-token',{method:'POST'});
+  prompt('Token chỉ đọc mới cho KinhDoanh (Hãy lưu giữ an toàn):',r.token);
+  notice('Đã tạo Token mới thành công.');
+  await refreshKinhDoanh();
+}));
+$('#kd-refresh-logs').addEventListener('click',()=>busy($('#kd-refresh-logs'),async()=>await loadKinhDoanhLogs()));
+$('#kd-log-filter').addEventListener('change',()=>loadKinhDoanhLogs().catch(e=>notice(e.message,true)));
 async function initialize(){const me=await api('/admin/me');session=true;$('#application').hidden=false;$('#login-panel').hidden=true;$('#account').textContent=me.username;
   settings=(await api('/admin/settings')).settings;const f=$('#settings-form');for(const key of ['spreadsheetId','intervalMinutes','batchSize'])f.elements[key].value=settings[key];f.elements.enabled.checked=settings.enabled;
   $('#credential-info').textContent=settings.credentialsConfigured?`Đã lưu Service Account: ${settings.serviceAccountEmail}`:'Chưa cấu hình Service Account. Chia sẻ Sheet với email của Service Account, quyền Editor.';await refresh(true);
@@ -50,7 +96,7 @@ $('#test-sheets').addEventListener('click',()=>busy($('#test-sheets'),async()=>{
 $('#entity-form').addEventListener('submit',e=>{e.preventDefault();busy(e.submitter,async()=>{const f=e.target;await api('/admin/entities',{method:'POST',body:JSON.stringify({name:f.elements.name.value.trim(),tabName:f.elements.tabName.value.trim(),headers:f.elements.headers.value.split(/[\r\n,]+/).map(s=>s.trim()).filter(Boolean),retentionDays:Number(f.elements.retentionDays.value)})});notice('Đã lưu tài nguyên. Chạy nhập lần đầu để bắt đầu sử dụng.');await refresh();});});
 $('#read-headers').addEventListener('click',()=>busy($('#read-headers'),async()=>{const f=$('#entity-form'),tab=f.elements.tabName.value.trim();if(!tab)throw Error('Nhập tên tab trước.');const r=await api('/admin/sheets/headers?tab='+encodeURIComponent(tab));if(!r.headers.length)throw Error('Tab chưa có tiêu đề. Hãy nhập danh sách cột thủ công.');f.elements.headers.value=r.headers.join('\n');if(!f.elements.name.value)f.elements.name.value=tab;notice('Đã lấy cột từ tab. Kiểm tra lại trước khi lưu.');}));
 $('#sync-now').addEventListener('click',()=>busy($('#sync-now'),async()=>{const r=await api('/admin/jobs',{method:'POST',body:JSON.stringify({kind:'sync'})});notice(r.existing?'Đã có tác vụ đang chờ/chạy.':'Đã lưu yêu cầu đồng bộ.');await refresh();}));
-const titles={overview:'Tổng quan đồng bộ',settings:'Cấu hình đồng bộ',entities:'Tài nguyên dữ liệu',connection:'Kết nối chấm công'};
-for(const b of document.querySelectorAll('[data-tab]'))b.addEventListener('click',()=>{for(const p of document.querySelectorAll('[data-page]'))p.hidden=p.dataset.page!==b.dataset.tab;for(const n of document.querySelectorAll('[data-tab]'))n.classList.toggle('active',n===b);$('#page-title').textContent=titles[b.dataset.tab];});
+const titles={overview:'Tổng quan đồng bộ',settings:'Cấu hình đồng bộ',entities:'Tài nguyên dữ liệu',connection:'Kết nối chấm công',kinhdoanh:'Kết nối Kinh Doanh'};
+for(const b of document.querySelectorAll('[data-tab]'))b.addEventListener('click',()=>{for(const p of document.querySelectorAll('[data-page]'))p.hidden=p.dataset.page!==b.dataset.tab;for(const n of document.querySelectorAll('[data-tab]'))n.classList.toggle('active',n===b);$('#page-title').textContent=titles[b.dataset.tab];if(b.dataset.tab==='kinhdoanh')refreshKinhDoanh();});
 setInterval(()=>refresh(),10000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 initialize().catch(()=>showLogin());
