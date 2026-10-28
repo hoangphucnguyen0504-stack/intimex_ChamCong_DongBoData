@@ -100,10 +100,10 @@ export async function readRows(pool,key,entity,query){
     hasMore,nextAfter:hasMore?selected.at(-1).sheet_row:null};
 }
 const sqlDate=v=>v&&typeof v==='string'&&Number.isFinite(Date.parse(v))&&new Date(v).getUTCFullYear()>=1000?new Date(v):null;
-export async function writeRows(pool,key,input){
+export async function writeRows(pool,key,input,options={}){
   const body=writeSchema.parse(input);await assertBinding(pool,key,body.spreadsheetId);
   if(new Set(body.changes.map(c=>c.recordId)).size!==body.changes.length)throw new Fault(400,'DUPLICATE_CHANGE_ID');
-  const fingerprint=digest(JSON.stringify(stable(body)));
+  const fingerprint=digest(JSON.stringify(stable(options.objectChanges?{body,objectChanges:options.objectChanges}:body)));
   return transaction(pool,async db=>{
     await db.query('INSERT IGNORE INTO requests(id,fingerprint) VALUES(?,?)',[body.requestId,fingerprint]);
     const [[receipt]]=await db.query('SELECT * FROM requests WHERE id=? FOR UPDATE',[body.requestId]);
@@ -113,7 +113,15 @@ export async function writeRows(pool,key,input){
     if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
     if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED');
     const headers=json(e.headers);
-    if(!compatibleHeaders(body.entity,headers,body.headers))throw new Fault(409,'ENTITY_SCHEMA_MISMATCH','Danh sách cột hai dự án khác nhau; cần đối chiếu trước khi ghi.');
+    if(!compatibleHeaders(body.entity,headers,body.headers)){
+      const prefix=body.headers.every((h,i)=>headers[i]===h);
+      let registered=options.registered===true;
+      if(prefix&&!registered){
+        const [known]=await db.query('SELECT descriptor FROM business_schemas WHERE entity=?',[body.entity]);
+        registered=known.some(r=>JSON.stringify(json(r.descriptor).fields.map(f=>f.key))===JSON.stringify(body.headers));
+      }
+      if(!prefix||!registered)throw new Fault(409,'ENTITY_SCHEMA_MISMATCH');
+    }
     for(const guard of body.guards){
       const guardKey=digest(body.spreadsheetId+'\0'+body.entity+'\0'+guard);
       try{await db.query('INSERT INTO record_guards(name,request_id) VALUES(?,?)',[guardKey,body.requestId]);}
@@ -128,7 +136,11 @@ export async function writeRows(pool,key,input){
       if(c.rowValues.length>body.headers.length||(c.op!=='delete'&&String(c.rowValues[body.headers.indexOf('ID')])!==c.recordId))throw new Fault(400,'INVALID_ROW_ID');
       const old=oldById.get(c.recordId),mapping=mapById.get(c.recordId);
       if(!old&&mapping?.archived_at)throw new Fault(410,'RECORD_ARCHIVED','Không ghi đè bản ghi đã lưu trữ.');
-      const previous=old?json(old.data):{},patch=Object.fromEntries(body.headers.map((h,i)=>[h,c.rowValues[i]??'']));
+      const objectChange=options.objectChanges?.find(change=>change.recordId===c.recordId);
+      if(objectChange&&c.op!=='append'&&Number(old?.version)!==objectChange.expectedVersion)throw new Fault(409,'RECORD_VERSION');
+      const previous=old?json(old.data):{},patch=objectChange
+        ? {...(objectChange.data||{}),ID:c.recordId}
+        : Object.fromEntries(body.headers.map((h,i)=>[h,c.rowValues[i]??'']));
       const next={...previous,...patch,...(body.headers.length<headers.length?compatibility.legacySealPatch(body.entity,previous,patch):{}),ID:c.recordId};
       if(c.op==='delete'&&(!old||old.deleted_at))continue;
       if(old?.deleted_at)throw new Fault(409,'RECORD_DELETED');

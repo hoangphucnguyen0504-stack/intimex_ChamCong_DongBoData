@@ -17,6 +17,7 @@ import {mountChatboxRead} from './chatboxRead.js';
 import {mountKinhDoanhRead} from './kinhDoanhRead.js';
 import {createRequestLogger} from './requestLogger.js';
 import {upsertImage,linkImage} from './images.js';
+import * as businessSchemas from './businessSchemas.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   const accessActivity=createAccessActivity();
@@ -103,6 +104,9 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.post('/v1/cham-cong/images/upsert',async(req,res)=>res.json(await upsertImage(pool,req.body)));
   app.post('/v1/cham-cong/images/link',async(req,res)=>res.json(await linkImage(pool,req.body)));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));
+  app.post('/v1/cham-cong/schemas/register',async(req,res)=>res.json(await businessSchemas.register(pool,config.CONFIG_ENCRYPTION_KEY,req.body,{sheetsFactory})));
+  app.post('/v1/cham-cong/write-object',async(req,res)=>res.json(await businessSchemas.writeObject(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
+  app.get('/v1/cham-cong/schema-capabilities',(_req,res)=>res.json({ok:true,protocol:'cham-cong-schema-v1',addOptionalFields:true,objectWrites:true}));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
   app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));
   app.post('/v1/cham-cong/write',async(req,res)=>res.json(await chamCong.writeRows(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
