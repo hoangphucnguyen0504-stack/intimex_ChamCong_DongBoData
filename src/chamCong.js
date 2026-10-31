@@ -59,12 +59,13 @@ export async function readRows(pool,key,entity,query){
   if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
   if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
-  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids';
+  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids',latest=query.view==='latest';
   const stateKey=query.key==null||query.key===''?null:String(query.key);
   const headers=json(e.headers);
   const lookup=readLookup(query,headers);
   // Khóa cooldown của xe container dài hơn 180 ký tự: @state/.../<sheet>/<loại>/<hash SĐT>/<hash container>.
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey)))throw new Fault(400,'INVALID_PAGE');
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids&&!latest)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey))||
+    (latest&&(entity!=='ReferenceData'||stateKey!=null||lookup||!headers.includes('Key')||!headers.includes('Revision'))))throw new Fault(400,'INVALID_PAGE');
   if(lookup){
     const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
     const more=!lookup.single&&found.length>100;
@@ -86,7 +87,22 @@ export async function readRows(pool,key,entity,query){
     }
   }
   const keyFilter=stateKey?" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
-  const [candidates]=await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+  // Rank the bounded snapshot before applying the page cursor: otherwise an old
+  // revision could reappear on a later page. BINARY matches JavaScript Map keys.
+  // Legacy groups with non-numeric revisions keep their original append order
+  // and full history so the existing stable JavaScript comparator remains valid.
+  const refKey="BINARY JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))";
+  const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
+  const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
+  const [candidates]=latest?await pool.query(`SELECT ranked.id,content.data,ranked.sheet_row FROM (
+    SELECT r.id,m.sheet_row,
+      ROW_NUMBER() OVER (PARTITION BY ${refKey} ORDER BY CASE WHEN ${numeric} THEN CAST(${refRevision} AS DECIMAL(30,0)) ELSE 0 END DESC,m.sheet_row) AS revision_rank,
+      MIN(CASE WHEN ${numeric} THEN 1 ELSE 0 END) OVER (PARTITION BY ${refKey}) AS numeric_revisions
+    FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row<=?
+    ) ranked JOIN records content ON content.entity=? AND content.id=ranked.id
+    WHERE (ranked.numeric_revisions=0 OR ranked.revision_rank=1) AND ranked.sheet_row>? ORDER BY ranked.sheet_row LIMIT ?`,[entity,upper,entity,after,limit+1])
+    :await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
     WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`,stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
   const selected=[];let bytes=0;
   for(const row of candidates){
@@ -96,7 +112,7 @@ export async function readRows(pool,key,entity,query){
     selected.push(row);bytes+=size;
   }
   const hasMore=candidates.length>selected.length;
-  return {ok:true,headers,rows:ids?selected.map(r=>[r.id]):selected.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
+  return {ok:true,...(latest?{latestOnly:true}:{}),headers,rows:ids?selected.map(r=>[r.id]):selected.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
     hasMore,nextAfter:hasMore?selected.at(-1).sheet_row:null};
 }
 const sqlDate=v=>v&&typeof v==='string'&&Number.isFinite(Date.parse(v))&&new Date(v).getUTCFullYear()>=1000?new Date(v):null;
