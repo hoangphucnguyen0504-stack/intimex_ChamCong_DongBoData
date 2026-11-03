@@ -38,6 +38,7 @@ Chưa có snapshot nội dung Sheets đã đồng bộ để nhận diện đầ
 - `git diff --check`: đạt, chỉ có thông báo chuyển LF/CRLF của Git.
 - Test hồi quy cách ly một hàng xung đột trong batch đã được chứng minh fail trước bản sửa bổ sung, rồi pass sau khi sửa.
 - `node --test test/mysql.integration.mjs`: **1 skipped**, vì không có `TEST_MYSQL_HOST`; không coi đây là integration pass.
+- Lượt chạy Docker do người dùng cung cấp trên VPS/MySQL 8.4.11: **1 fail**, tại assertion synced_version sau restart (0 thay vì 2). Test chỉ đưa job về hạn chạy, nhưng chưa đưa retry của record về hạn nên worker bỏ qua record đúng cơ chế backoff. Đã cập nhật `test/mysql.integration.mjs` để xác nhận restart giữ backoff, rồi đưa đúng receipt fixture đến hạn và kiểm tra ACK/xóa receipt. **Chưa có kết quả chạy lại MySQL của phiên bản test này.** Sau thay đổi, 87 test local và syntax check tiếp tục đạt.
 - Docker không xuất hiện trong `Get-Command` ở môi trường này; chưa build image Docker hay chạy MySQL thật.
 - `graphify update .` bị allowlist lean-ctx chặn; không chạy vòng qua hạn chế.
 

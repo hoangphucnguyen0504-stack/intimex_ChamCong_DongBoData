@@ -31,9 +31,21 @@ test('MySQL isolated: atomic CRUD, replay, conflict, restart, import, retention 
   await enqueue(pool,'sync');await tick(pool,config,{sheetsFactory:()=>unreliable});
   let [[row]]=await pool.query('SELECT * FROM records WHERE entity=? AND id=?',[key,'test-record-1']);assert.equal(publicRecord(row).syncStatus,'pending');
   const position=[...sheetRows.keys()][0];
+  const [[failure]]=await pool.query('SELECT * FROM sync_record_failures WHERE entity=? AND id=?',[key,'test-record-1']);
+  assert.equal(Number(failure.attempts),1);assert.equal(failure.error_code,'NETWORK_ERROR');assert(failure.next_attempt_at);
+  // Restart must preserve per-record backoff, even if the job itself is due.
+  await pool.query('UPDATE sync_record_failures SET next_attempt_at=UTC_TIMESTAMP(3)+INTERVAL 1 HOUR WHERE entity=? AND id=?',[key,'test-record-1']);
+  await pool.query("UPDATE jobs SET state='running',available_at=UTC_TIMESTAMP(3) WHERE kind='sync'");
+  let prematureWrites=0;
+  await tick(pool,config,{sheetsFactory:()=>({...fake,writeRows:async()=>{prematureWrites++;}})});
+  assert.equal(prematureWrites,0);
+  [[row]]=await pool.query('SELECT * FROM records WHERE entity=? AND id=?',[key,'test-record-1']);assert.equal(Number(row.synced_version),0);assert.equal(row.dirty,1);
+  // Advance only this fixture's retry schedule instead of sleeping in the test.
+  await pool.query('UPDATE sync_record_failures SET next_attempt_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE entity=? AND id=?',[key,'test-record-1']);
   await pool.query("UPDATE jobs SET state='running',available_at=UTC_TIMESTAMP(3) WHERE kind='sync'");
   await tick(pool,config,tickOptions);assert.equal(sheetRows.size,1);assert.equal([...sheetRows.keys()][0],position);
   [[row]]=await pool.query('SELECT * FROM records WHERE entity=? AND id=?',[key,'test-record-1']);assert.equal(Number(row.synced_version),2);assert.equal(row.dirty,0);
+  const [failures]=await pool.query('SELECT * FROM sync_record_failures WHERE entity=? AND id=?',[key,'test-record-1']);assert.equal(failures.length,0);
   // Active rows survive retention even if their business date is old.
   await pool.query('UPDATE records SET business_at=UTC_TIMESTAMP(3)-INTERVAL 20 DAY,updated_at=UTC_TIMESTAMP(3)-INTERVAL 20 DAY WHERE entity=?',[key]);
   assert.equal(await cleanup(pool),0);
