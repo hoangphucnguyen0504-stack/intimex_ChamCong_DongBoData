@@ -147,7 +147,10 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.use((err,_req,res,_next)=>{
     const status=err instanceof ZodError?400:err.type==='entity.parse.failed'?400:err.type==='entity.too.large'?413:err instanceof Fault?err.status:503;
     const code=err instanceof ZodError?'VALIDATION_ERROR':err instanceof Fault?err.code:status===413?'PAYLOAD_TOO_LARGE':'SERVICE_UNAVAILABLE';
-    if(status>=500)console.error(JSON.stringify({event:'api_error',code}));
+    if(status>=500){
+      const dependencyCode=['ECONNREFUSED','ECONNRESET','ETIMEDOUT','ENOTFOUND','PROTOCOL_CONNECTION_LOST','ER_CON_COUNT_ERROR','ER_LOCK_DEADLOCK','ER_LOCK_WAIT_TIMEOUT','POOL_CLOSED','QUEUE_LIMIT'].includes(err.code)?err.code:undefined;
+      console.error(JSON.stringify({event:'api_error',code,...(dependencyCode?{dependency_code:dependencyCode}:{})}));
+    }
     res.status(status).json({ok:false,code,message:err instanceof Fault?err.message:err instanceof ZodError?'Dữ liệu không hợp lệ.':'Dịch vụ tạm thời chưa sẵn sàng.',...(err instanceof Fault&&err.details?{current:err.details}:{})});
   });
   return app;

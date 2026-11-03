@@ -48,16 +48,39 @@ export class Sheets {
   }
   async writeRows(entity, rows) {
     if(!rows.length)return;
-    const headers=json(entity.headers),tab=tabRange(entity.tab_name),idCol=columnName(headers.indexOf('ID'));
+    const headers=json(entity.headers),tab=tabRange(entity.tab_name);
     await this.ensureCapacity(entity,Math.max(...rows.map(r=>r.sheet_row)));
-    const current=await this.batchRead(rows.map(r=>`${tab}!${idCol}${r.sheet_row}`));
+    const current=await this.batchRead(rows.map(r=>`${tab}!A${r.sheet_row}:${columnName(headers.length+metadataHeaders.length-1)}${r.sheet_row}`));
+    if(current.length!==rows.length)throw new Fault(502,'SHEET_READ_INCOMPLETE');
     current.forEach((range,i)=>{
-      const id=range.values?.[0]?.[0];
-      if(id!==undefined&&id!==''&&String(id)!==rows[i].id)throw new Fault(422,'SHEET_ROW_MOVED');
+      const cells=range.values?.[0]||[],id=cells[headers.indexOf('ID')];
+      if(String(id??'')!==rows[i].id&&!(rows[i].synced_version==0&&(id===undefined||id==='')))throw new Fault(422,'SHEET_ROW_MOVED','SHEET_ROW_MOVED',{actual_id:id??null});
+      if((id===undefined||id==='')&&cells.some(v=>v!==''&&v!==null&&v!==undefined))throw new Fault(422,'SHEET_ROW_MOVED');
+      const version=cells[headers.length];
+      if(version!==undefined&&version!==''&&(!Number.isSafeInteger(Number(version))||Number(version)<1||Number(version)>Number(rows[i].version)))throw new Fault(422,'SHEET_VERSION_CONFLICT');
     });
     const iso=v=>v?new Date(v).toISOString():'';
     await this.write(rows.map(row=>({range:`${tab}!A${row.sheet_row}`,values:[[
       ...headers.map(h=>json(row.data)[h]??''),Number(row.version),iso(row.deleted_at),iso(row.business_at),iso(row.finalized_at)
     ]]})));
+  }
+  async locateRows(entity,rows) {
+    const headers=json(entity.headers),idCol=columnName(headers.indexOf('ID')),tab=tabRange(entity.tab_name);
+    const values=await this.read(`${tab}!${idCol}2:${idCol}`),positions=new Map();
+    values.forEach((cells,i)=>{const id=String(cells[0]??'');if(id){if(!positions.has(id))positions.set(id,[]);positions.get(id).push(i+2);}});
+    const ready=[],conflicts=[];
+    for(const row of rows){
+      const found=positions.get(row.id)||[];
+      if(found.length>1){conflicts.push({row,code:'DUPLICATE_SHEET_ID'});continue;}
+      if(found.length===1){ready.push({...row,sheet_row:found[0]});continue;}
+      if(Number(row.synced_version)>0){conflicts.push({row,code:'SHEET_ID_MISSING'});continue;}
+      // A never-acknowledged delivery may reserve a slot, but must not overwrite
+      // an ID-less business row or a slot now occupied after an insert/sort.
+      const occupied=await this.read(`${tab}!A${row.sheet_row}:${columnName(headers.length+metadataHeaders.length-1)}${row.sheet_row}`);
+      if(occupied.some(cells=>cells.some(v=>v!==''&&v!==null&&v!==undefined))){conflicts.push({row,code:'SHEET_ROW_MOVED'});continue;}
+      ready.push(row);
+    }
+    for(const conflict of conflicts)conflict.actual_id=values[conflict.row.sheet_row-2]?.[0]??null;
+    return {ready,conflicts,positions};
   }
 }

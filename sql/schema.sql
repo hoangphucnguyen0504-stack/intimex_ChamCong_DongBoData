@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS requests (
  response JSON NULL,
  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS sync_record_failures (
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+ version BIGINT UNSIGNED NOT NULL,
+ attempts INT NOT NULL DEFAULT 1,
+ error_code VARCHAR(100) NOT NULL,
+ next_attempt_at DATETIME(3) NULL,
+ PRIMARY KEY(entity,id)
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS record_guards (
  name CHAR(64) PRIMARY KEY,
  request_id VARCHAR(128) NOT NULL

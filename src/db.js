@@ -21,26 +21,7 @@ export async function migrate(pool) {
       if(indexed.length)await conn.query('ALTER TABLE records DROP INDEX record_state_key');
       await conn.query("ALTER TABLE records ADD INDEX record_state_key (entity, (CAST(JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key')) AS CHAR(191))), updated_at)");
     }
-    if(modern)await keepLatestState(conn);
   } finally {await conn.query("SELECT RELEASE_LOCK('datadongbo-migration')").catch(()=>{});conn.release();}
-}
-async function keepLatestState(conn){
-  const removeOld=`DELETE r FROM records r INNER JOIN (
-    SELECT id FROM (
-      SELECT id,
-        FIRST_VALUE(JSON_UNQUOTE(JSON_EXTRACT(data,'$.Revision'))) OVER (
-          PARTITION BY JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key')) ORDER BY updated_at DESC
-        ) AS head,
-        JSON_UNQUOTE(JSON_EXTRACT(data,'$.Revision')) AS revision
-      FROM records
-      WHERE entity='ApplicationState' AND deleted_at IS NULL AND JSON_EXTRACT(data,'$.Key') IS NOT NULL
-    ) ranked WHERE ranked.revision<>ranked.head LIMIT 400
-  ) gone ON gone.id=r.id WHERE r.entity='ApplicationState'`;
-  for(let i=0;i<50;i++){
-    const [removed]=await conn.query(removeOld);
-    if(!removed.affectedRows)break;
-  }
-  await conn.query(`DELETE m FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity='ApplicationState' AND r.id IS NULL`);
 }
 export async function transaction(pool, fn) {
   const c = await pool.getConnection();

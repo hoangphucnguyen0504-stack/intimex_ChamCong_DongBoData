@@ -66,9 +66,51 @@ export async function importPage(pool,entity,sheets) {
   });
   return {done:values.length<limit,count:values.length};
 }
-export async function syncEntity(pool,entity,sheets,batchSize) {
+async function deferRecord(pool,entity,row,error) {
+  const code=errorCode(error);
+  const [[old]]=await pool.query('SELECT version,attempts FROM sync_record_failures WHERE entity=? AND id=?',[entity.name,row.id]);
+  const attempts=old&&String(old.version)===String(row.version)?Number(old.attempts)+1:1;
+  const next=retryable(error)&&attempts<8?new Date(Date.now()+backoff(attempts,error.retryAfterMs||0)):null;
+  await pool.query(`INSERT INTO sync_record_failures(entity,id,version,attempts,error_code,next_attempt_at) VALUES(?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE version=VALUES(version),attempts=VALUES(attempts),error_code=VALUES(error_code),next_attempt_at=VALUES(next_attempt_at)`,
+    [entity.name,row.id,row.version,attempts,code,next]);
+  console.error(JSON.stringify({event:'sheet_row_conflict',entity:entity.name,record_id:row.id,expected_row:row.sheet_row,
+    expected_id:row.id,actual_id:error.details?.actual_id??null,action:'skipped',error_code:code}));
+}
+export async function reconcileRows(pool,entity,positions) {
+  return transaction(pool,async db=>{
+    await db.query('SELECT next_row FROM entities WHERE name=? FOR UPDATE',[entity.name]);
+    const [maps]=await db.query('SELECT id,sheet_row FROM row_map WHERE entity=? FOR UPDATE',[entity.name]);
+    const blocked=new Set(),proposed=maps.map(m=>{
+      const found=positions.get(m.id)||[];
+      return {...m,target:found.length===1?found[0]:Number(m.sheet_row)};
+    });
+    // A missing/duplicate owner must retain its slot. Propagate collisions only
+    // through that connected group; unrelated records can still be delivered.
+    let changed;
+    do{
+      changed=false;const targets=new Map();
+      for(const m of proposed){
+        const target=blocked.has(m.id)?Number(m.sheet_row):m.target,other=targets.get(target);
+        if(other){for(const id of [m.id,other])if(!blocked.has(id)){blocked.add(id);changed=true;}}
+        else targets.set(target,m.id);
+      }
+    }while(changed);
+    const changes=proposed.filter(m=>!blocked.has(m.id)&&m.target!==Number(m.sheet_row));
+    // Stage only changed mappings inside one transaction to support swaps while
+    // preserving the unique sheet_position constraint and archived mappings.
+    for(const m of changes)await db.query('UPDATE row_map SET sheet_row=? WHERE entity=? AND id=?',[-Number(m.sheet_row),entity.name,m.id]);
+    for(const m of changes)await db.query('UPDATE row_map SET sheet_row=? WHERE entity=? AND id=?',[m.target,entity.name,m.id]);
+    let max=1;for(const found of positions.values())for(const row of found)max=Math.max(max,row);
+    await db.query('UPDATE entities SET next_row=GREATEST(next_row,?) WHERE name=?',[max+1,entity.name]);
+    return blocked;
+  });
+}
+export async function syncEntity(pool,entity,sheets,batchSize,{lockHeld=false}={}) {
+  if(!lockHeld)return exclusive(pool,()=>syncEntity(pool,entity,sheets,batchSize,{lockHeld:true}));
   if(entity.bootstrap_state!=='ready')return 0;
-  const [rows]=await pool.query('SELECT * FROM records WHERE entity=? AND dirty=1 ORDER BY updated_at,id LIMIT ?',[entity.name,batchSize]);
+  const [rows]=await pool.query(`SELECT r.* FROM records r LEFT JOIN sync_record_failures f ON f.entity=r.entity AND f.id=r.id AND f.version=r.version
+    WHERE r.entity=? AND r.dirty=1 AND (f.id IS NULL OR f.next_attempt_at<=UTC_TIMESTAMP(3)) ORDER BY r.updated_at,r.id LIMIT ?`,[entity.name,batchSize]);
   if(!rows.length)return 0;
   await sheets.ensureHeader(entity);
   // Persist deterministic row slots before HTTP. Retrying overwrites the same row.
@@ -81,13 +123,43 @@ export async function syncEntity(pool,entity,sheets,batchSize) {
     }
     await db.query('UPDATE entities SET next_row=? WHERE name=?',[next,entity.name]);
   });
-  await sheets.writeRows(entity,rows);
+  let ready=rows;
+  if(sheets.locateRows){
+    await sheets.ensureCapacity(entity,Math.max(...rows.map(r=>r.sheet_row)));
+    const located=await sheets.locateRows(entity,rows);
+    for(const {row,code,actual_id} of located.conflicts)await deferRecord(pool,entity,row,new Fault(422,code,code,{actual_id}));
+    if(located.ready.length){
+      const blocked=await reconcileRows(pool,entity,located.positions);
+      for(const row of located.ready.filter(row=>blocked.has(row.id)))await deferRecord(pool,entity,row,new Fault(422,'ROW_MAP_CONFLICT'));
+      located.ready=located.ready.filter(row=>!blocked.has(row.id));
+    }
+    ready=located.ready;
+  }
+  if(!ready.length)return 0;
+  const deliver=async batch=>{
+    try{await sheets.writeRows(entity,batch);return batch;}
+    catch(error){
+      // These errors are raised by read-only preflight before any write. Split
+      // only those batches; never amplify an HTTP timeout or quota failure.
+      if(['SHEET_ROW_MOVED','SHEET_VERSION_CONFLICT'].includes(error.code)&&error.status===422){
+        if(batch.length>1){const mid=Math.floor(batch.length/2);return [...await deliver(batch.slice(0,mid)),...await deliver(batch.slice(mid))];}
+        await deferRecord(pool,entity,batch[0],error);return [];
+      }
+      for(const row of batch)await deferRecord(pool,entity,row,error);
+      throw error;
+    }
+  };
+  ready=await deliver(ready);
+  if(!ready.length)return 0;
   await transaction(pool,async db=>{
-    for(const row of rows)await db.query('UPDATE records SET synced_version=GREATEST(synced_version,?),dirty=IF(version=?,0,1) WHERE entity=? AND id=?',
-      [row.version,row.version,entity.name,row.id]);
+    for(const row of ready){
+      await db.query('UPDATE records SET synced_version=GREATEST(synced_version,?),dirty=IF(version=?,0,1) WHERE entity=? AND id=?',
+        [row.version,row.version,entity.name,row.id]);
+      await db.query('DELETE FROM sync_record_failures WHERE entity=? AND id=? AND version<=?',[entity.name,row.id,row.version]);
+    }
     await db.query('UPDATE entities SET last_sync_at=UTC_TIMESTAMP(3),last_error=NULL WHERE name=?',[entity.name]);
   });
-  return rows.length;
+  return ready.length;
 }
 export async function cleanup(pool) {
   // Finalized + latest version confirmed + old business date. Reference data retention=0.
@@ -126,25 +198,29 @@ export async function tick(pool,config,{sheetsFactory=c=>new Sheets(c,{gate:quot
     if(job)await db.query("UPDATE jobs SET state='running' WHERE id=?",[job.id]);
     try {
       const [entities]=await db.query('SELECT * FROM entities'+(job?.entity?' WHERE name=?':''),job?.entity?[job.entity]:[]);
+      let entityError;
       for(const entity of entities) {
         const kind=job?.kind||'sync';
         const [{insertId}]=await db.query('INSERT INTO sync_runs(entity,kind) VALUES(?,?)',[entity.name,kind]);
         try {
-          const value=kind==='import'?await importPage(pool,entity,sheets):{count:await syncEntity(pool,entity,sheets,settings.batchSize),done:true};
+          const value=kind==='import'?await importPage(pool,entity,sheets):{count:await syncEntity(pool,entity,sheets,settings.batchSize,{lockHeld:true}),done:true};
           await db.query("UPDATE sync_runs SET state='success',rows_count=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[value.count,insertId]);
           if(!value.done) {await db.query("UPDATE jobs SET state='pending',attempts=0 WHERE id=?",[job.id]);return;}
         } catch(e) {
           const code=errorCode(e);
           await db.query("UPDATE sync_runs SET state='failed',error_code=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[code,insertId]);
-          await db.query('UPDATE entities SET last_error=? WHERE name=?',[code,entity.name]);throw e;
+          await db.query('UPDATE entities SET last_error=? WHERE name=?',[code,entity.name]);entityError??=e;
         }
       }
+      if(entityError)throw entityError;
       // Drain additional dirty batches on subsequent ticks, not after another full hour.
-      const [[{n}]]=await db.query("SELECT COUNT(*) n FROM records r JOIN entities e ON e.name=r.entity WHERE r.dirty=1 AND e.bootstrap_state='ready'"+(job?.entity?' AND r.entity=?':''),job?.entity?[job.entity]:[]);
+      const [[{n}]]=await db.query("SELECT COUNT(*) n FROM records r JOIN entities e ON e.name=r.entity LEFT JOIN sync_record_failures f ON f.entity=r.entity AND f.id=r.id AND f.version=r.version WHERE r.dirty=1 AND e.bootstrap_state='ready' AND (f.id IS NULL OR f.next_attempt_at IS NOT NULL)"+(job?.entity?' AND r.entity=?':''),job?.entity?[job.entity]:[]);
+      const [[{n:blocked}]]=await db.query("SELECT COUNT(*) n FROM records r JOIN sync_record_failures f ON f.entity=r.entity AND f.id=r.id AND f.version=r.version WHERE r.dirty=1 AND f.next_attempt_at IS NULL"+(job?.entity?' AND r.entity=?':''),job?.entity?[job.entity]:[]);
       if(job?.kind==='sync'&&Number(n)>0) {
         await db.query("UPDATE jobs SET state='pending',attempts=0,error_code=NULL,available_at=UTC_TIMESTAMP(3)+INTERVAL 5 SECOND WHERE id=?",[job.id]);
-      } else if(job)await db.query("UPDATE jobs SET state='success',finished_at=UTC_TIMESTAMP(3),error_code=NULL WHERE id=?",[job.id]);
-      await db.query('UPDATE runtime_state SET next_sync_at=TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(3)),worker_error=NULL,failures=0 WHERE id=1',[Number(n)>0?5:settings.intervalMinutes*60]);
+      } else if(job&&Number(blocked)>0)await db.query("UPDATE jobs SET state='needs_review',finished_at=UTC_TIMESTAMP(3),error_code='SYNC_RECORDS_NEED_REVIEW' WHERE id=?",[job.id]);
+      else if(job)await db.query("UPDATE jobs SET state='success',finished_at=UTC_TIMESTAMP(3),error_code=NULL WHERE id=?",[job.id]);
+      await db.query('UPDATE runtime_state SET next_sync_at=TIMESTAMPADD(SECOND,?,UTC_TIMESTAMP(3)),worker_error=?,failures=0 WHERE id=1',[Number(n)>0?5:settings.intervalMinutes*60,Number(blocked)>0?'SYNC_RECORDS_NEED_REVIEW':null]);
       await cleanup(pool);
     } catch(error) {
       const code=errorCode(error),delay=backoff((job?.attempts??state.failures??0)+1,error.retryAfterMs||0);

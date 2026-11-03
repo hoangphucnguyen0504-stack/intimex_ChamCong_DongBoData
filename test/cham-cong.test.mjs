@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {writeRows,readRows} from '../src/chamCong.js';
-import {encrypt} from '../src/core.js';
+import {writeRows,readRows,unchangedStateChunks} from '../src/chamCong.js';
+import {encrypt,digest} from '../src/core.js';
 const key='1'.repeat(64),spreadsheetId='fixture-sheet-1234567890',headers=['ID','CreatedAt','FullName'];
 const body={spreadsheetId,entity:'Attendance',headers,requestId:'integration-request-1',changes:[{op:'append',recordId:'ATT-1',rowValues:['ATT-1','2026-10-19T01:00:00Z','Name']}],guards:['guard_revision']};
 function fixture({entity='Attendance',entityHeaders=headers,existing=[]}={}){
@@ -123,6 +123,27 @@ test('batch write preloads rows once in sorted id order',async()=>{
  assert.deepEqual(records[0].args,['Attendance','ATT-1','ATT-2']);
  assert.deepEqual(maps[0].args,['Attendance','ATT-1','ATT-2']);
  assert.equal(f.calls.filter(c=>c.sql.startsWith('INSERT INTO records')).length,2);
+});
+test('identical ApplicationState chunk keeps version and existing pending acknowledgement',async()=>{
+ const stateHeaders=['ID','Key','Revision','Value'];
+ const data={ID:'state:18',Key:'state-key',Revision:'r1',Value:'chunk'};
+ const f=fixture({entity:'ApplicationState',entityHeaders:stateHeaders,existing:[{id:data.ID,data,version:1226,dirty:1,synced_version:99}]});
+ const result=await writeRows(f.pool,key,{spreadsheetId,entity:'ApplicationState',headers:stateHeaders,requestId:'state-noop-test',guards:[],changes:[{op:'append',recordId:data.ID,rowValues:stateHeaders.map(h=>data[h])}]});
+ assert.equal(result.records[0].version,1226);assert.equal(result.records[0].syncStatus,'pending');
+ assert(!f.calls.some(c=>c.sql.startsWith('INSERT INTO records')));
+});
+test('stable state ignores transport revision/time only for a complete unchanged group',()=>{
+ const fields=['ID','CreatedAt','Key','Revision','Part','Value','Parts','Checksum'];
+ const prefix=digest('runtime-config').slice(0,24),checksum=digest('firstsecond');
+ const old=[0,1].map(i=>({id:prefix+':'+i,data:{ID:prefix+':'+i,CreatedAt:'old-time',Key:'runtime-config',Revision:'old-rev',Part:String(i),Value:i?'second':'first',Parts:'2',Checksum:checksum}}));
+ const changes=old.map(row=>({op:'append',recordId:row.id,rowValues:fields.map(h=>h==='CreatedAt'?'new-time':h==='Revision'?'new-rev':row.data[h])}));
+ const body={entity:'ApplicationState',headers:fields,changes};
+ assert.equal(unchangedStateChunks(body,old).size,2);
+ assert.equal(unchangedStateChunks({...body,changes:changes.slice(0,1)},old).size,0);
+ const changed=structuredClone(body);changed.changes[1].rowValues[5]='modified';
+ assert.equal(unchangedStateChunks(changed,old).size,0);
+ const mixed=structuredClone(old);mixed[1].data.Revision='incomplete-old';
+ assert.equal(unchangedStateChunks(body,mixed).size,0);
 });
 test('record id and one column do not page the whole sheet',async()=>{
  const data=JSON.stringify({ID:'TRP-1',CreatedAt:'2026-10-20T02:00:00Z',FullName:'TAI XE'});

@@ -116,6 +116,30 @@ export async function readRows(pool,key,entity,query){
     hasMore,nextAfter:hasMore?selected.at(-1).sheet_row:null};
 }
 const sqlDate=v=>v&&typeof v==='string'&&Number.isFinite(Date.parse(v))&&new Date(v).getUTCFullYear()>=1000?new Date(v):null;
+export function unchangedStateChunks(body,existing){
+  const unchanged=new Set();
+  if(body.entity!=='ApplicationState'||!['ID','CreatedAt','Key','Revision','Part','Value','Parts','Checksum'].every(h=>body.headers.includes(h)))return unchanged;
+  const groups=new Map(),oldById=new Map(existing.map(row=>[row.id,row]));
+  for(const change of body.changes){
+    const data=Object.fromEntries(body.headers.map((h,i)=>[h,change.rowValues[i]??'']));
+    if(!groups.has(data.Key))groups.set(data.Key,[]);
+    groups.get(data.Key).push({change,data});
+  }
+  for(const [key,parts] of groups){
+    const total=Number(parts[0].data.Parts),revision=parts[0].data.Revision;
+    if(!Number.isInteger(total)||total<1||parts.length!==total||new Set(parts.map(p=>Number(p.data.Part))).size!==total)continue;
+    let oldRevision;const prefix=digest(String(key)).slice(0,24);
+    const equal=parts.every(({change,data})=>{
+      const old=oldById.get(change.recordId),before=old&&json(old.data),part=Number(data.Part);
+      if(!old||old.deleted_at||change.op!=='append'||!Number.isInteger(part)||part<0||part>=total||
+        change.recordId!==prefix+':'+part||data.Revision!==revision||Number(data.Parts)!==total)return false;
+      oldRevision??=before.Revision;
+      return before.Revision===oldRevision&&body.headers.filter(h=>!['CreatedAt','Revision'].includes(h)).every(h=>(before[h]??'')===data[h]);
+    });
+    if(equal)for(const {change} of parts)unchanged.add(change.recordId);
+  }
+  return unchanged;
+}
 export async function writeRows(pool,key,input,options={}){
   const body=writeSchema.parse(input);await assertBinding(pool,key,body.spreadsheetId);
   if(new Set(body.changes.map(c=>c.recordId)).size!==body.changes.length)throw new Fault(400,'DUPLICATE_CHANGE_ID');
@@ -148,6 +172,7 @@ export async function writeRows(pool,key,input,options={}){
     const [existing]=await db.query(`SELECT * FROM records WHERE entity=? AND id IN (${marks}) FOR UPDATE`,[body.entity,...ids]);
     const [mappings]=await db.query(`SELECT * FROM row_map WHERE entity=? AND id IN (${marks})`,[body.entity,...ids]);
     const oldById=new Map(existing.map(row=>[row.id,row])),mapById=new Map(mappings.map(row=>[row.id,row]));
+    const unchangedChunks=options.objectChanges?new Set():unchangedStateChunks(body,existing);
     for(const c of body.changes){
       if(c.rowValues.length>body.headers.length||(c.op!=='delete'&&String(c.rowValues[body.headers.indexOf('ID')])!==c.recordId))throw new Fault(400,'INVALID_ROW_ID');
       const old=oldById.get(c.recordId),mapping=mapById.get(c.recordId);
@@ -160,10 +185,16 @@ export async function writeRows(pool,key,input,options={}){
       const next={...previous,...patch,...(body.headers.length<headers.length?compatibility.legacySealPatch(body.entity,previous,patch):{}),ID:c.recordId};
       if(c.op==='delete'&&(!old||old.deleted_at))continue;
       if(old?.deleted_at)throw new Fault(409,'RECORD_DELETED');
+      if(unchangedChunks.has(c.recordId)){
+        saved.push({entity:body.entity,id:c.recordId,version:Number(old.version),syncStatus:old.dirty?'pending':'synced'});continue;
+      }
       // Phiên cân và cấu hình dùng mã cố định. Lần ghi sau cập nhật đúng dòng đó, không thêm bản sao.
       const sameState=old&&c.op==='append'&&body.entity==='ApplicationState'&&String(next.Key||'')!==''&&String(json(old.data).Key||'')===String(next.Key);
       if(old&&c.op==='append'&&!sameState){
         if(JSON.stringify(headers.map(h=>json(old.data)[h]??''))!==JSON.stringify(headers.map(h=>next[h]??'')))throw new Fault(409,'ID_EXISTS');
+        saved.push({entity:body.entity,id:c.recordId,version:Number(old.version),syncStatus:old.dirty?'pending':'synced'});continue;
+      }
+      if(old&&c.op!=='delete'&&JSON.stringify(stable(previous))===JSON.stringify(stable(next))){
         saved.push({entity:body.entity,id:c.recordId,version:Number(old.version),syncStatus:old.dirty?'pending':'synced'});continue;
       }
       if(!mapping){await db.query('INSERT INTO row_map(entity,id,sheet_row) VALUES(?,?,?)',[body.entity,c.recordId,nextRow++]);}

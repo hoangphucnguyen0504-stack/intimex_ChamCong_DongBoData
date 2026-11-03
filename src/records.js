@@ -30,6 +30,11 @@ export async function mutate(pool, input) {
       const businessAt=op.businessAt?new Date(op.businessAt):current?.business_at||now;
       const finalizedAt=op.finalizedAt===undefined?current?.finalized_at||null:op.finalizedAt?new Date(op.finalizedAt):null;
       const deletedAt=op.action==='delete'?now:null;
+      const sameDate=(a,b)=>(a?+new Date(a):null)===(b?+new Date(b):null);
+      if(current&&op.action!=='delete'&&JSON.stringify(stable(json(current.data)))===JSON.stringify(stable(next))&&
+        sameDate(current.business_at,businessAt)&&sameDate(current.finalized_at,finalizedAt)){
+        result.push(publicRecord(current));continue;
+      }
       await db.query(`INSERT INTO records(entity,id,data,version,business_at,finalized_at,updated_at,deleted_at) VALUES(?,?,?,1,?,?,?,?)
         ON DUPLICATE KEY UPDATE data=VALUES(data),version=version+1,dirty=1,business_at=VALUES(business_at),finalized_at=VALUES(finalized_at),updated_at=VALUES(updated_at),deleted_at=VALUES(deleted_at)`,
       [op.entity,op.id,JSON.stringify(next),businessAt,finalizedAt,now,deletedAt]);
