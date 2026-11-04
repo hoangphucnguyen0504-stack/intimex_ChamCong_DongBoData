@@ -1,4 +1,6 @@
 .env
+.env.before-local
+.env.before-local
 node_modules/
 backups/
 secrets/
