@@ -200,8 +200,11 @@ export async function readRows(pool,key,entity,query,options={}){
     WHERE (ranked.numeric_revisions=0 OR ranked.revision_rank=1) AND ranked.sheet_row>? ORDER BY ranked.sheet_row LIMIT ?`,[entity,upper,entity,after,limit+1])
     :await pool.query(stateKey
       ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`
-      :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id AND r.deleted_at IS NULL WHERE m.entity=? AND m.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
+      :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
       stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+  // A stale map for a soft-deleted record must not become an archive candidate.
+  // Missing, unarchived records indicate broken mapping; never return empty account cells.
+  if(candidates.some(row=>row.id==null&&!row.archived_at))throw new Fault(503,'ROW_MAP_RECORD_MISSING','Vị trí dữ liệu không còn bản ghi tương ứng; cần đối chiếu dữ liệu.');
   if(!ids){
     const archivedCandidates = candidates.filter(r => !r.data && r.archived_at);
     if(archivedCandidates.length > 0){
@@ -209,6 +212,7 @@ export async function readRows(pool,key,entity,query,options={}){
       await populateArchivedRows(pool, e, archivedCandidates, sheets);
     }
   }
+  if(!ids&&candidates.some(row=>{const data=json(row.data);return !data||typeof data!=='object'||Array.isArray(data);}))throw new Fault(503,'RECORD_DATA_INVALID','Nội dung bản ghi không hợp lệ; cần đối chiếu dữ liệu.');
   const selected=[];let bytes=0;
   for(const row of candidates){
     if(selected.length>=limit)break;

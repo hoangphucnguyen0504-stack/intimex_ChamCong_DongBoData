@@ -7,6 +7,34 @@ const key = Buffer.alloc(32, 5).toString('hex');
 const spreadsheetId = 'test-spreadsheet-id-1234567890';
 const headers = ['ID', 'CreatedAt', 'FullName', 'Status'];
 
+function accountPool(candidates, inspect = () => {}) {
+  return {query: async sql => {
+    if(sql.includes('SELECT encrypted'))return [[{encrypted:encrypt({spreadsheetId},key)}]];
+    if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Admins',headers,bootstrap_state:'ready',retention_days:0,next_row:10}]];
+    if(sql.startsWith('SELECT COUNT(*) n'))return [[{n:0}]];
+    if(sql.includes('FROM row_map m LEFT JOIN records r')){inspect(sql);return [candidates];}
+    throw Error('Unexpected query');
+  }};
+}
+
+test('account reads exclude soft-deleted records in WHERE while preserving archive joins',async()=>{
+  const pool=accountPool([{id:'active',map_id:'active',sheet_row:3,data:{ID:'active'}}],sql=>{
+    assert.match(sql,/LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE/);
+    assert.match(sql,/WHERE m.entity=\? AND m.deleted_at IS NULL AND r.deleted_at IS NULL/);
+  });
+  const page=await readRows(pool,key,'Admins',{spreadsheetId});
+  assert.equal(page.rows.length,1);
+  assert.equal(page.rows[0][0],'active');
+});
+
+test('orphan account mapping fails explicitly instead of returning empty accounts',async()=>{
+  await assert.rejects(readRows(accountPool([{id:null,map_id:'orphan',sheet_row:2,data:null,archived_at:null}]),key,'Admins',{spreadsheetId}),{code:'ROW_MAP_RECORD_MISSING'});
+});
+
+test('null account payload fails explicitly instead of TypeError',async()=>{
+  await assert.rejects(readRows(accountPool([{id:'broken',map_id:'broken',sheet_row:2,data:null}]),key,'Admins',{spreadsheetId}),{code:'RECORD_DATA_INVALID'});
+});
+
 test('readRows seamlessly merges live MySQL rows and archived Sheets rows', async () => {
   const entity = 'Attendance';
   // Row 2 is archived (not in records, but in row_map with archived_at)
