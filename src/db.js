@@ -13,7 +13,16 @@ export async function migrate(pool) {
   try {
     const [[lock]]=await conn.query("SELECT GET_LOCK('datadongbo-migration',30) AS acquired");
     if(!Number(lock.acquired)) throw Error('MIGRATION_BUSY');
-    for(const sql of source.split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const credentials=await readFile(new URL('../sql/drive-credentials.sql',import.meta.url),'utf8');
+    for(const sql of (source+';'+credentials).split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const retentionSql = await readFile(new URL('../sql/retention.sql', import.meta.url),'utf8');
+    for(const sql of retentionSql.split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const [previewCols] = await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='retention_previews' AND column_name='entities'");
+    if(!previewCols.length) await conn.query('ALTER TABLE retention_previews ADD COLUMN entities JSON NULL');
+    const [jobCols] = await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='retention_jobs' AND column_name='entities'");
+    if(!jobCols.length) await conn.query('ALTER TABLE retention_jobs ADD COLUMN entities JSON NULL');
+    const [imageColumns]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='image_metadata' AND column_name='drive_credential_id'");
+    if(!imageColumns.length)await conn.query('ALTER TABLE image_metadata ADD COLUMN drive_credential_id VARCHAR(100) NULL');
     const [[version]]=await conn.query('SELECT VERSION() AS v');
     const modern=/^(8\.|9\.)/.test(String(version.v));
     const [indexed]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='records' AND index_name='record_state_key'");

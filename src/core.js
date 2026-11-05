@@ -50,8 +50,13 @@ export const entitySchema = z.object({
 export const settingsSchema = z.object({
   spreadsheetId:z.string().regex(/^[\w-]{20,200}$/), intervalMinutes:z.number().int().min(1).max(1440),
   enabled:z.boolean(), batchSize:z.number().int().min(1).max(200),
+  autoRollover:z.boolean().optional(),
+  spreadsheetTargets:z.array(z.object({spreadsheetId:z.string().regex(/^[\w-]{20,200}$/),label:z.string().trim().min(1).max(100),enabled:z.boolean().default(true)}).strict()).max(20).optional(),
   serviceAccount:z.object({client_email:z.email(), private_key:z.string().includes('PRIVATE KEY')}).optional()
-}).strict();
+}).strict().superRefine((value,ctx)=>{
+  const ids=[value.spreadsheetId,...(value.spreadsheetTargets||[]).map(target=>target.spreadsheetId)];
+  if(new Set(ids).size!==ids.length)ctx.addIssue({code:'custom',message:'Mỗi file Google Sheets chỉ được cấu hình một lần.'});
+});
 export const metadataHeaders = ['__dd_version','__dd_deleted_at','__dd_business_at','__dd_finalized_at'];
 export function columnName(index) {
   let out = ''; for(let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(65 + (n - 1) % 26) + out;

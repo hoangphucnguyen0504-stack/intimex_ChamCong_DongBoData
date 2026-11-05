@@ -9,7 +9,7 @@
 </main>
 <div id="application" hidden>
   <aside><div class="brand"><span class="brand-mark small">D↗</span><strong>DataĐồngBộ</strong></div><p class="aside-caption">TRUNG TÂM ĐIỀU PHỐI</p>
-    <nav aria-label="Điều hướng"><button data-tab="overview" class="active">Tổng quan</button><button data-tab="settings">Cấu hình đồng bộ</button><button data-tab="entities">Tài nguyên dữ liệu</button><button data-tab="connection">Kết nối chấm công</button><button data-tab="kinhdoanh">Kết nối Kinh Doanh</button></nav>
+    <nav aria-label="Điều hướng"><button data-tab="overview" class="active">Tổng quan</button><button data-tab="settings">Cấu hình đồng bộ</button><button data-tab="entities">Tài nguyên dữ liệu</button><button data-tab="connection">Kết nối chấm công</button><button data-tab="kinhdoanh">Kết nối Kinh Doanh</button><button data-tab="retention">Dọn dữ liệu MySQL</button></nav>
     <div class="aside-bottom"><span id="account"></span><button id="logout" class="ghost">Đăng xuất</button></div>
   </aside>
   <main class="workspace">
@@ -26,11 +26,16 @@
     <section data-page="settings" hidden>
       <form id="settings-form" class="panel form-grid"><div class="full"><h2>Kết nối Google Sheets</h2><p class="muted">Khóa được mã hóa trong MySQL. Giao diện không đọc lại private key đã lưu.</p></div>
         <label class="full">Spreadsheet ID<input name="spreadsheetId" required placeholder="Phần ID trong đường dẫn Google Sheets"></label>
+        <div class="full"><h3>File Google Sheets tiếp theo</h3><p class="muted">Thêm file dự phòng theo thứ tự sử dụng. Bản ghi mới chuyển sang file tiếp theo khi file hiện tại đầy; bản ghi cũ vẫn được cập nhật ở file gốc. Chia sẻ từng file với Service Account có quyền chỉnh sửa.</p><div id="sheet-target-editor"></div><button type="button" id="add-sheet-target" class="ghost">Thêm file dự phòng</button></div>
+        <label class="check full"><input name="autoRollover" type="checkbox" checked> Tự chuyển sang file kế tiếp khi đầy</label>
         <label>Lịch đồng bộ (phút)<input name="intervalMinutes" type="number" min="1" max="1440" value="60" required></label><label>Số bản ghi mỗi lô<input name="batchSize" type="number" min="1" max="200" value="100" required></label>
         <label class="full">JSON Service Account<textarea name="serviceAccount" rows="6" spellcheck="false" placeholder="Dán JSON khi cấu hình lần đầu hoặc thay khóa. Để trống để giữ khóa đã lưu."></textarea></label>
         <p id="credential-info" class="muted full"></p><label class="check full"><input name="enabled" type="checkbox"> Bật đồng bộ tự động</label>
         <div class="actions full"><button>Lưu cấu hình</button><button type="button" id="test-sheets" class="ghost">Kiểm tra kết nối đã lưu</button></div>
       </form>
+      <div class="panel"><div class="section-head"><h2>Các file đồng bộ</h2><button type="button" id="refresh-sheet-targets" class="ghost">Cập nhật trạng thái file</button></div><p id="sheet-target-status" class="muted" role="status"></p><div class="table-scroll"><table><thead><tr><th>File</th><th>Tài nguyên / Tab</th><th>Trạng thái</th><th>Dòng tiếp theo</th><th>Lỗi gần nhất</th><th>Kiểm tra</th></tr></thead><tbody id="sheet-target-states"></tbody></table></div></div>
+      <form id="drive-credentials-form" class="panel"><div class="section-head"><div><h2>Tài khoản Google Drive dự phòng</h2><p class="muted">Thứ tự từ trên xuống là thứ tự ưu tiên. Để trống secret/token của cấu hình đã lưu để giữ nguyên. Mỗi tài khoản phải có quyền truy cập thư mục của mình.</p></div><button type="button" id="reload-drive-credentials" class="ghost">Tải lại cấu hình Drive</button></div><p id="drive-credentials-status" class="muted" role="status"></p><div id="drive-credentials-editor"></div><div class="actions"><button type="button" id="add-drive-credential" class="ghost">Thêm tài khoản Drive</button><button type="submit" id="save-drive-credentials" disabled>Lưu danh sách Drive</button></div></form>
+      <div class="panel"><div class="section-head"><h2>Cấu hình Drive đã cấp cho các dịch vụ</h2><button type="button" id="refresh-drive-issuance" class="ghost">Cập nhật danh sách đã cấp</button></div><p class="muted">Hiển thị cấu hình DataDongBo đã cấp gần nhất cho ChamCong và HDoi. Dịch vụ lưu lại để dùng; không gọi lấy token liên tục. Đây không phải kiểm tra kết nối trực tiếp.</p><div class="table-scroll"><table><thead><tr><th>Dịch vụ</th><th>Cấu hình / Mã</th><th>Token</th><th>Đã cấp lúc</th><th>Lý do</th></tr></thead><tbody id="drive-consumers"></tbody></table></div><details><summary>Lịch sử cấp cấu hình</summary><div class="table-scroll"><table><thead><tr><th>Dịch vụ</th><th>Cấu hình</th><th>Đã cấp lúc</th><th>Lý do</th><th>Phiên bản</th></tr></thead><tbody id="drive-credential-events"></tbody></table></div></details></div>
       <div class="panel"><h2>Quy tắc vận hành</h2><p>MySQL là nguồn dữ liệu chính. Google Sheets nhận các thay đổi theo lô. Không chỉnh tay vị trí dòng, cột ID và các cột <code>__dd_*</code> của tab đang liên kết.</p><p>Xóa cuốn chiếu chỉ áp dụng cho tài nguyên đã bật lưu trữ, bản ghi đã hoàn tất, đã đồng bộ phiên bản mới nhất và không thay đổi trong thời hạn lưu. Dữ liệu danh mục/tài khoản nên giữ vĩnh viễn.</p></div>
     </section>
     <section data-page="entities" hidden>
@@ -127,7 +132,172 @@ Authorization: Bearer &lt;API_TOKEN&gt;
         </div>
       </div>
     </section>
+    <section data-page="retention" hidden>
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>1. Xóa cuốn chiếu tự động</h2>
+            <p class="muted">Tự động dọn dẹp các bản ghi cũ đủ điều kiện theo lịch hàng ngày (giờ Việt Nam). Dữ liệu trên Google Sheets được giữ nguyên 100%.</p>
+          </div>
+        </div>
+        <form id="retention-policy-form" class="form-grid">
+          <label>Loại dữ liệu
+            <select name="entity" id="retention-auto-entity">
+              <option value="">Tất cả loại dữ liệu hợp lệ</option>
+            </select>
+            <small>Tài khoản, cấu hình và danh mục mặc định tự động được bảo vệ.</small>
+          </label>
+          <label>Số ngày giữ lại trong MySQL
+            <input name="retentionDays" type="number" min="1" max="3650" value="30" required>
+            <small>Chỉ xóa bản ghi có ngày phát sinh cũ hơn số ngày này.</small>
+          </label>
+          <label>Giờ chạy hàng ngày (Giờ Việt Nam)
+            <input name="scheduleHhmm" type="time" value="02:00" required>
+            <small>Định dạng HH:MM theo múi giờ Việt Nam (UTC+7).</small>
+          </label>
+          <div class="full">
+            <label class="check">
+              <input name="enabled" type="checkbox"> Bật xóa cuốn chiếu tự động
+            </label>
+          </div>
+          <div class="actions full">
+            <button type="submit" id="save-retention-policy">Lưu cấu hình cuốn chiếu</button>
+          </div>
+        </form>
+
+        <div style="margin-top: 24px;">
+          <h3>Chính sách tự động hiện tại</h3>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Loại dữ liệu</th>
+                  <th>Số ngày giữ</th>
+                  <th>Giờ chạy (VN)</th>
+                  <th>Trạng thái</th>
+                  <th>Lần chạy gần nhất</th>
+                  <th>Lần chạy tiếp theo</th>
+                </tr>
+              </thead>
+              <tbody id="retention-policies-table"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>2. Xóa hàng loạt thủ công</h2>
+            <p class="muted">Chủ động dọn dẹp dữ liệu cũ theo một hoặc nhiều loại dữ liệu và khoảng ngày mong muốn. Bắt buộc xem trước và xác thực mật khẩu trước khi xóa.</p>
+          </div>
+        </div>
+        <form id="retention-manual-form">
+          <div class="full" style="margin-bottom: 16px;">
+            <label style="margin-bottom: 8px;">Chọn loại dữ liệu cần dọn:</label>
+            <div style="margin-bottom: 8px; display: flex; gap: 8px;">
+              <button type="button" id="manual-select-all" class="ghost" style="padding: 4px 10px; font-size: 0.8rem;">Chọn tất cả</button>
+              <button type="button" id="manual-deselect-all" class="ghost" style="padding: 4px 10px; font-size: 0.8rem;">Bỏ chọn tất cả</button>
+            </div>
+            <div id="retention-entities-selector" class="entity-checkbox-grid"></div>
+          </div>
+
+          <div class="form-grid" style="margin-bottom: 16px;">
+            <label>Từ ngày
+              <input name="dateFrom" id="manual-date-from" type="date">
+              <small>Để trống nếu không giới hạn mốc bắt đầu.</small>
+            </label>
+            <label>Đến ngày
+              <input name="dateTo" id="manual-date-to" type="date">
+              <small>Để trống nếu không giới hạn mốc kết thúc.</small>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button type="button" id="manual-preview-btn">Xem trước số lượng bản ghi</button>
+          </div>
+        </form>
+
+        <!-- Khung xem trước -->
+        <div id="retention-preview-box" class="preview-box" hidden>
+          <div class="section-head">
+            <h3>Kết quả xem trước</h3>
+            <span class="badge" id="preview-timer-badge">Hiệu lực trong 10 phút</span>
+          </div>
+          <p class="muted">Hệ thống đã kiểm tra tính sẵn sàng của dữ liệu dựa trên điều kiện an toàn:</p>
+          <div class="stats" style="margin: 16px 0;">
+            <article style="border-left: 4px solid #176750;">
+              <span>Đủ điều kiện xóa</span>
+              <strong id="preview-eligible-count">0</strong>
+              <small>Đã hoàn tất &amp; đã đồng bộ Sheets</small>
+            </article>
+            <article style="border-left: 4px solid #c25e2e;">
+              <span>Bị bỏ qua (Giữ lại)</span>
+              <strong id="preview-skipped-count">0</strong>
+              <small>Chưa hoàn tất hoặc chưa đồng bộ</small>
+            </article>
+          </div>
+          <div class="actions">
+            <button type="button" id="manual-execute-btn" style="background: #993322;">Thực hiện xóa dữ liệu</button>
+            <button type="button" id="manual-cancel-preview-btn" class="ghost">Hủy bỏ</button>
+          </div>
+        </div>
+
+        <!-- Khung tiến độ & kết quả -->
+        <div id="retention-progress-box" class="progress-box" hidden>
+          <div class="section-head">
+            <h3 id="progress-title">Đang dọn dữ liệu...</h3>
+            <span class="badge" id="progress-status-badge">Đang chạy</span>
+          </div>
+          <div class="progress-bar-container">
+            <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <p id="progress-detail" class="muted">Đã dọn 0 bản ghi...</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Lịch sử thao tác dọn dữ liệu</h2>
+            <p class="muted">Nhật ký chi tiết các lần dọn tự động và thủ công.</p>
+          </div>
+          <button type="button" id="refresh-retention-history" class="ghost">Làm mới lịch sử</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Thao tác</th>
+                <th>Tài nguyên</th>
+                <th>Số bản ghi đã dọn</th>
+                <th>Người thực hiện</th>
+              </tr>
+            </thead>
+            <tbody id="retention-history-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </main>
+</div>
+<div id="retention-password-modal" class="modal-overlay" hidden>
+  <div class="modal-dialog">
+    <div class="modal-head">
+      <h3>Xác thực mật khẩu quản trị</h3>
+    </div>
+    <form id="retention-password-form">
+      <p id="modal-prompt-text" class="muted">Vui lòng nhập lại mật khẩu quản trị để xác nhận thao tác.</p>
+      <label>Mật khẩu quản trị
+        <input name="password" id="retention-modal-password" type="password" required autocomplete="current-password" maxlength="200" placeholder="Mật khẩu tài khoản admin">
+      </label>
+      <div class="actions" style="margin-top: 20px; justify-content: flex-end;">
+        <button type="button" id="retention-modal-cancel" class="ghost">Hủy bỏ</button>
+        <button type="submit" id="retention-modal-confirm">Xác nhận</button>
+      </div>
+    </form>
+  </div>
 </div>
 <div id="notice" role="status" hidden></div>
 <script type="module" src="/app.js"></script>

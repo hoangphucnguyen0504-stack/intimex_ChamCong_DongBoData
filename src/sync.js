@@ -4,6 +4,7 @@ import {exclusive,transaction} from './db.js';
 import {getSettings} from './settings.js';
 import {Sheets} from './sheets.js';
 import {quotaGate} from './quota.js';
+import {syncDestinations} from './sheetDestinations.js';
 
 export async function enqueue(pool,kind,entity=null) {
   if(!['sync','import'].includes(kind))throw new Fault(400,'INVALID_JOB');
@@ -109,6 +110,7 @@ export async function reconcileRows(pool,entity,positions) {
 export async function syncEntity(pool,entity,sheets,batchSize,{lockHeld=false}={}) {
   if(!lockHeld)return exclusive(pool,()=>syncEntity(pool,entity,sheets,batchSize,{lockHeld:true}));
   if(entity.bootstrap_state!=='ready')return 0;
+  if(sheets.config?.spreadsheetId&&sheets.forSpreadsheet)return syncDestinations(pool,entity,sheets,batchSize,{deferRecord});
   const [rows]=await pool.query(`SELECT r.* FROM records r LEFT JOIN sync_record_failures f ON f.entity=r.entity AND f.id=r.id AND f.version=r.version
     WHERE r.entity=? AND r.dirty=1 AND (f.id IS NULL OR f.next_attempt_at<=UTC_TIMESTAMP(3)) ORDER BY r.updated_at,r.id LIMIT ?`,[entity.name,batchSize]);
   if(!rows.length)return 0;

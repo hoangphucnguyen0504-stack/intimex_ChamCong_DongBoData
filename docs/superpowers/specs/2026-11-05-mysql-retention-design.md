@@ -1,0 +1,11 @@
+# Dọn dữ liệu MySQL
+
+User approved implementation after reviewing this scope: add a DataDongBo tab with (1) automatic rolling retention by selected data type, user-entered days and Vietnam HH:mm schedule, and (2) manual bulk deletion by selected data types/date range or all eligible data. Reenter administrator password before enabling/changing scheduled policy and before every manual job. Correct server-side password verification is mandatory; scheduled jobs do not store/reuse the password.
+
+Defaults: automatic retention disabled; no policy inferred from old entity.retention_days values. Protected identity/configuration/catalog/state resources cannot be deleted through this feature. Existing unfinalized, dirty, unsynced or mismatched records are excluded. Cleanup verifies latest acknowledged Sheets contents before deleting and rechecks exact MySQL versions transactionally. Sheets receive no writes/deletes. Keep logical mappings, physical file/tab/row locations and idempotency guards/receipts; delete only eligible business-record payloads from MySQL.
+
+Manual deletion requires a bounded expiring preview tied to exact selection/snapshot, then password and idempotent request ID. Revalidate eligibility at execution. Queue durable batches and counters so progress survives worker restart; retry safely without deleting new records that appeared after preview. Rolling jobs run independently of the Sheets sync interval and only once for a due local schedule occurrence. Display protected/ineligible counts and safe errors, and record policy/job audit metadata without passwords or full deleted payloads.
+
+Reads after cleanup must merge live SQL rows and archived Sheets content using the existing stable logical ordering and per-file physical mappings. Preserve lookup/filter/pagination/deletion semantics and fail explicitly when archive reads are unavailable/corrupt; never silently omit archived history. Protected reference/state tables avoid retention. Read-only integrations cannot gain write or secret access through history fallback.
+
+No production database deletion, real Google changes, .env reads or deployment are authorized as part of coding. All tests use local fixtures/mock services. Keep prior multi-file Sheets/Drive work and existing user changes intact.

@@ -16,7 +16,10 @@ export class Sheets {
     const response=await this.fetch(this.base+path,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${token}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
     this.calls++;
     if(!response.ok) {
-      const error=new Fault(response.status,'GOOGLE_HTTP_'+response.status);
+      const payload=await response.json().catch(()=>null);
+      const message=String(payload?.error?.message||'');
+      const capacity=response.status===400&&/above the limit of|exceed.*(?:cell|spreadsheet).*limit|limit.*(?:cells|spreadsheet)|maximum number of cells/i.test(message);
+      const error=new Fault(response.status,capacity?'SHEET_CAPACITY_EXHAUSTED':'GOOGLE_HTTP_'+response.status);
       const retry=response.headers.get('retry-after');
       error.retryAfterMs=retry?(Number.isFinite(Number(retry))?Number(retry)*1000:Math.max(0,Date.parse(retry)-Date.now())):0;
       throw error;
@@ -24,6 +27,17 @@ export class Sheets {
     return response.json();
   }
   async read(range) {return (await this.call('/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];}
+  forSpreadsheet(spreadsheetId) {
+    if(spreadsheetId===this.config.spreadsheetId)return this;
+    const target=new Sheets({...this.config,spreadsheetId},{fetchImpl:this.fetch,sleepImpl:this.sleep,gate:this.gate});
+    target.auth=this.auth;return target;
+  }
+  async prepareDestination(entity) {
+    const info=await this.call('?fields=sheets(properties(sheetId,title))');
+    if(!info.sheets?.some(s=>s.properties.title===entity.tab_name))
+      await this.call(':batchUpdate',{requests:[{addSheet:{properties:{title:entity.tab_name,gridProperties:{rowCount:100,columnCount:json(entity.headers).length+metadataHeaders.length}}}}]});
+    return this.ensureHeader(entity);
+  }
   async batchRead(ranges) {
     const query=new URLSearchParams({valueRenderOption:'UNFORMATTED_VALUE'});ranges.forEach(r=>query.append('ranges',r));
     return (await this.call('/values:batchGet?'+query)).valueRanges||[];

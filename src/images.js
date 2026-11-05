@@ -9,6 +9,7 @@ const timestamp=z.iso.datetime({offset:true}).transform(value=>new Date(value).t
 export const imageSchema=z.object({
   namespace,imageId,version,state:z.enum(['HOLD','UPLOADING','RETRY','FAILED','COMPLETED']),
   driveFileId:z.string().regex(/^[a-zA-Z0-9_-]{10,200}$/).nullable().default(null),
+  credentialId:z.string().regex(/^[\w.-]{1,100}$/).nullable().optional(),
   mime:z.enum(['image/jpeg','image/png','image/webp']),size:z.number().int().min(1).max(50*1024*1024),
   checksum:z.string().regex(/^[a-f0-9]{64}$/),verifiedAt:timestamp.nullable().default(null),updatedAt:timestamp
 }).strict().superRefine((value,ctx)=>{
@@ -43,7 +44,7 @@ async function writeVersioned(pool,table,keys,value,columns){
 export async function upsertImage(pool,input){
   const v=imageSchema.parse(input);
   return writeVersioned(pool,'image_metadata',{namespace:v.namespace,image_id:v.imageId},v,{
-    state:v.state,drive_file_id:v.driveFileId,mime:v.mime,size_bytes:v.size,checksum:v.checksum,
+    state:v.state,drive_file_id:v.driveFileId,...(v.credentialId!==undefined?{drive_credential_id:v.credentialId}:{}),mime:v.mime,size_bytes:v.size,checksum:v.checksum,
     verified_at:v.verifiedAt?new Date(v.verifiedAt):null,updated_at:new Date(v.updatedAt)
   });
 }

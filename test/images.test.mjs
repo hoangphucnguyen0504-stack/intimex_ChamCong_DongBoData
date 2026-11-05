@@ -35,6 +35,11 @@ test('metadata completion before business link is durable, idempotent and ignore
   assert.equal(db.tables.image_metadata.size,1);assert.equal(db.tables.image_links.size,1);
   assert.equal([...db.tables.image_metadata.values()][0].drive_file_id,image.driveFileId);
 });
+test('credential ownership metadata is durable and invalid IDs are rejected',async()=>{
+  const db=database();await upsertImage(db,{...image,credentialId:'credential-a'});
+  assert.equal([...db.tables.image_metadata.values()][0].drive_credential_id,'credential-a');
+  await assert.rejects(upsertImage(database(),{...image,credentialId:'../private'}),error=>error.name==='ZodError');
+});
 test('link can precede metadata and slot updates never overwrite other slots',async()=>{
   const db=database();await linkImage(db,link);await linkImage(db,{...link,slot:1,imageId:'c'.repeat(32)});
   assert.equal((await upsertImage(db,image)).applied,true);

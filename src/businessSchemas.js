@@ -13,12 +13,19 @@ function checked(fn){try{return fn();}catch(e){throw new Fault(e.status||400,e.c
 export async function register(pool,key,input,{sheetsFactory=s=>new Sheets(s)}={}){
   const schema=checked(()=>normalize(input?.schema));
   await assertBinding(pool,key,input.spreadsheetId);
+  const next=schema.fields.map(f=>f.key),hash=fingerprint(schema);
+  // An existing contract needs no schema mutation or sync lock. Read the
+  // committed contract and headers together; additive upgrades preserve it.
+  const [[registered]]=await pool.query(`SELECT s.version,e.headers,e.bootstrap_state
+    FROM business_schemas s JOIN entities e ON e.name=s.entity
+    WHERE s.entity=? AND s.schema_hash=? LIMIT 1`,[schema.entity,hash]);
+  if(registered?.bootstrap_state==='ready'&&next.every((h,i)=>json(registered.headers)[i]===h))
+    return {ok:true,protocol:'cham-cong-schema-v1',schemaVersion:Number(registered.version),schemaHash:hash};
   const result=await exclusive(pool,async db=>{
     await db.beginTransaction();
     try{
       const [[entity]]=await db.query('SELECT * FROM entities WHERE name=? FOR UPDATE',[schema.entity]);
       const [[prior]]=await db.query('SELECT * FROM business_schemas WHERE entity=? ORDER BY version DESC LIMIT 1 FOR UPDATE',[schema.entity]);
-      const next=schema.fields.map(f=>f.key),hash=fingerprint(schema);
       const [[known]]=await db.query('SELECT * FROM business_schemas WHERE entity=? AND schema_hash=?',[schema.entity,hash]);
       if(known&&entity&&entity.bootstrap_state==='ready'&&next.every((h,i)=>json(entity.headers)[i]===h)){
         await db.commit();return {ok:true,protocol:'cham-cong-schema-v1',schemaVersion:Number(known.version),schemaHash:hash};
@@ -29,8 +36,14 @@ export async function register(pool,key,input,{sheetsFactory=s=>new Sheets(s)}={
       if(entity&&Number(entity.retention_days)>0)fail('BUSINESS_SCHEMA_RETENTION');
       if(entity&&!prior&&schema.fields.slice(0,current.length).some((f,i)=>i===0?f.type!=='text'||!f.required:f.type!=='cell'||f.required))fail('BUSINESS_SCHEMA_REQUIRED_MIGRATION');
       if(!prior&&schema.fields.slice(current.length).some(f=>f.required)&&entity)fail('BUSINESS_SCHEMA_REQUIRED_MIGRATION');
-      const sheets=sheetsFactory(await getSettings(db,key));
+      const baseSheets=sheetsFactory(await getSettings(db,key));
       let tab=entity?.tab_name||schema.entity;
+      const destinations=[baseSheets];
+      if(baseSheets.forSpreadsheet){
+        const [locations]=await db.query('SELECT DISTINCT spreadsheet_id FROM sheet_locations WHERE entity=?',[schema.entity]);
+        for(const location of locations)if(location.spreadsheet_id!==baseSheets.config.spreadsheetId)destinations.push(baseSheets.forSpreadsheet(location.spreadsheet_id));
+      }
+      for(const sheets of destinations){
       if(!entity){
         const info=await sheets.call('?fields=sheets(properties(sheetId,title))');
         if(!info.sheets?.some(s=>s.properties.title===tab))await sheets.call(':batchUpdate',{requests:[{addSheet:{properties:{title:tab}}}]});
@@ -53,6 +66,7 @@ export async function register(pool,key,input,{sheetsFactory=s=>new Sheets(s)}={
           await sheets.call(':batchUpdate',{requests:[{insertDimension:{range:{sheetId,dimension:'COLUMNS',startIndex:current.length,endIndex:next.length},inheritFromBefore:true}}]});
         }
         if(!same(header,expected))await sheets.write([{range:tabRange(tab)+'!A1',values:[expected]}]);
+      }
       }
       const version=Number(prior?.version||0)+1;
       if(entity)await db.query('UPDATE entities SET headers=? WHERE name=?',[JSON.stringify(next),schema.entity]);

@@ -1,6 +1,23 @@
 CREATE TABLE IF NOT EXISTS settings (
  id TINYINT PRIMARY KEY, encrypted MEDIUMTEXT NOT NULL
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS sheet_locations (
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ id VARCHAR(191) COLLATE utf8mb4_bin NOT NULL,
+ spreadsheet_id VARCHAR(200) COLLATE utf8mb4_bin NOT NULL,
+ tab_name VARCHAR(100) NOT NULL,
+ sheet_row INT NOT NULL,
+ write_attempted TINYINT NOT NULL DEFAULT 0,
+ PRIMARY KEY(entity,id), UNIQUE KEY physical_position(entity,spreadsheet_id,sheet_row)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS sheet_destination_state (
+ entity VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
+ spreadsheet_id VARCHAR(200) COLLATE utf8mb4_bin NOT NULL,
+ next_row INT NOT NULL DEFAULT 2,
+ exhausted TINYINT NOT NULL DEFAULT 0,
+ last_error VARCHAR(100) NULL,
+ PRIMARY KEY(entity,spreadsheet_id)
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS entities (
  name VARCHAR(64) COLLATE utf8mb4_bin PRIMARY KEY,
  tab_name VARCHAR(100) NOT NULL UNIQUE,
@@ -100,6 +117,7 @@ CREATE TABLE IF NOT EXISTS image_metadata (
  fingerprint CHAR(64) NOT NULL DEFAULT '',
  state VARCHAR(16) NULL,
  drive_file_id VARCHAR(200) NULL,
+ drive_credential_id VARCHAR(100) NULL,
  mime VARCHAR(40) NULL,
  size_bytes BIGINT UNSIGNED NULL,
  checksum CHAR(64) NULL,

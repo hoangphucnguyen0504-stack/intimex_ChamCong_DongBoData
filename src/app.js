@@ -18,6 +18,19 @@ import {mountKinhDoanhRead} from './kinhDoanhRead.js';
 import {createRequestLogger} from './requestLogger.js';
 import {upsertImage,linkImage} from './images.js';
 import * as businessSchemas from './businessSchemas.js';
+import {mountDriveCredentials} from './driveCredentials.js';
+import {listDestinationStatus,destinationSheets} from './sheetDestinations.js';
+import {
+  verifyAdminPassword,
+  listPolicies,
+  listEligibleEntities,
+  savePolicy,
+  previewCleanup,
+  createCleanupJob,
+  getJob,
+  runJobBatch,
+  listJobs
+} from './retention.js';
 export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quotaGate(pool,config.SHEETS_REQUESTS_PER_MINUTE)})}={}) {
   const app=express(),auth=authFor(pool,config);
   const accessActivity=createAccessActivity();
@@ -41,8 +54,12 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.get('/admin/me',(_req,res)=>res.json({ok:true,username:config.ADMIN_USERNAME}));
   app.get('/admin/settings',async(_req,res)=>res.json({ok:true,settings:await getSettings(pool,config.CONFIG_ENCRYPTION_KEY,true)}));
   app.put('/admin/settings',async(req,res)=>res.json(await saveSettings(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
-  app.post('/admin/sheets/test',async(_req,res)=>{
-    const s=sheetsFactory(await getSettings(pool,config.CONFIG_ENCRYPTION_KEY));const result=await s.test();
+  app.get('/admin/sheets/destinations',async(_req,res)=>res.json(await listDestinationStatus(pool,await getSettings(pool,config.CONFIG_ENCRYPTION_KEY))));
+  app.post('/admin/sheets/test',async(req,res)=>{
+    const settings=await getSettings(pool,config.CONFIG_ENCRYPTION_KEY);
+    const spreadsheetId=req.body?.spreadsheetId||settings.spreadsheetId;
+    if(![settings.spreadsheetId,...(settings.spreadsheetTargets||[]).map(target=>target.spreadsheetId)].includes(spreadsheetId))throw new Fault(400,'TARGET_NOT_CONFIGURED','Lưu cấu hình file trước khi kiểm tra.');
+    const s=sheetsFactory({...settings,spreadsheetId});const result=await s.test();
     res.json({ok:true,title:result.properties.title,tabs:result.sheets.map(s=>s.properties.title)});
   });
   app.get('/admin/sheets/headers',async(req,res)=>{
@@ -97,10 +114,38 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     config.KINHDOANH_READ_TOKEN = newToken;
     res.json({ok: true, token: newToken});
   });
+  app.get('/admin/retention/policies',async(_req,res)=>{
+    res.json({
+      ok: true,
+      policies: await listPolicies(pool),
+      entities: await listEligibleEntities(pool)
+    });
+  });
+  app.post('/admin/retention/policies',async(req,res)=>{
+    verifyAdminPassword(config, req.socket.remoteAddress, req.body?.password);
+    res.json(await savePolicy(pool, req.body));
+  });
+  app.post('/admin/retention/preview',async(req,res)=>{
+    res.json(await previewCleanup(pool, req.body));
+  });
+  app.post('/admin/retention/jobs',async(req,res)=>{
+    verifyAdminPassword(config, req.socket.remoteAddress, req.body?.password);
+    res.status(202).json(await createCleanupJob(pool, req.body));
+  });
+  app.get('/admin/retention/jobs/:id',async(req,res)=>{
+    res.json(await getJob(pool, req.params.id));
+  });
+  app.post('/admin/retention/jobs/:id/batch',async(req,res)=>{
+    res.json(await runJobBatch(pool, req.params.id, Math.min(200, Number(req.body?.batchSize) || 100)));
+  });
+  app.get('/admin/retention/history',async(req,res)=>{
+    res.json(await listJobs(pool, Number(req.query.limit) || 20));
+  });
   mountChatboxRead(app,pool,config,{track:accessActivity.track('chatbox')});
   mountKinhDoanhRead(app,pool,config,{track:accessActivity.track('kinhdoanh'),requestLogger});
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
+  mountDriveCredentials(app,pool,config);
   app.post('/v1/cham-cong/images/upsert',async(req,res)=>res.json(await upsertImage(pool,req.body)));
   app.post('/v1/cham-cong/images/link',async(req,res)=>res.json(await linkImage(pool,req.body)));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));
@@ -108,7 +153,11 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.post('/v1/cham-cong/write-object',async(req,res)=>res.json(await businessSchemas.writeObject(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
   app.get('/v1/cham-cong/schema-capabilities',(_req,res)=>res.json({ok:true,protocol:'cham-cong-schema-v1',addOptionalFields:true,objectWrites:true}));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
-  app.get('/v1/cham-cong/rows/:entity',async(req,res)=>res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query)));
+  app.get('/v1/cham-cong/rows/:entity',async(req,res)=>{
+    let sheets;
+    try { sheets = sheetsFactory(await getSettings(pool,config.CONFIG_ENCRYPTION_KEY)); } catch {}
+    res.json(await chamCong.readRows(pool,config.CONFIG_ENCRYPTION_KEY,entityName.parse(req.params.entity),req.query,{sheets,sheetsFactory}));
+  });
   app.post('/v1/cham-cong/write',async(req,res)=>res.json(await chamCong.writeRows(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
   app.post('/v1/batch',async(req,res)=>res.json(await mutate(pool,req.body)));
   app.get('/v1/requests/:id',async(req,res)=>{
@@ -134,10 +183,16 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
     const [[e]]=await pool.query('SELECT * FROM entities WHERE name=?',[entity]);
     const [[m]]=await pool.query('SELECT sheet_row FROM row_map WHERE entity=? AND id=?',[entity,id]);
     if(!e||!m)throw new Fault(404,'ARCHIVE_NOT_FOUND');
-    const sheets=sheetsFactory(await getSettings(pool,config.CONFIG_ENCRYPTION_KEY)),headers=[...json(e.headers),'__dd_version','__dd_deleted_at','__dd_business_at','__dd_finalized_at'];
-    const [currentHeader=[]]=await sheets.read(tabRange(e.tab_name)+'!1:1');
+    let sheets=sheetsFactory(await getSettings(pool,config.CONFIG_ENCRYPTION_KEY));
+    const headers=[...json(e.headers),'__dd_version','__dd_deleted_at','__dd_business_at','__dd_finalized_at'];
+    let physical=m,tab=e.tab_name;
+    if(sheets.forSpreadsheet){
+      const [[location]]=await pool.query('SELECT * FROM sheet_locations WHERE entity=? AND id=?',[entity,id]);
+      if(location){sheets=destinationSheets(sheets,location.spreadsheet_id);physical=location;tab=location.tab_name;}
+    }
+    const [currentHeader=[]]=await sheets.read(tabRange(tab)+'!1:1');
     if(JSON.stringify(headers)!==JSON.stringify(currentHeader))throw new Fault(409,'SHEET_HEADER_MISMATCH');
-    const [values=[]]=await sheets.read(`${tabRange(e.tab_name)}!A${m.sheet_row}:${columnName(headers.length-1)}${m.sheet_row}`);
+    const [values=[]]=await sheets.read(`${tabRange(tab)}!A${physical.sheet_row}:${columnName(headers.length-1)}${physical.sheet_row}`);
     const r=importRecord(e,values,headers);
     if(!r||r.id!==id)throw new Fault(409,'SHEET_ROW_MOVED');
     res.json({ok:true,source:'sheets',record:{...r,entity}});

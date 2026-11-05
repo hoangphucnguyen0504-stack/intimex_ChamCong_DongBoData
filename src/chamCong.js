@@ -1,7 +1,9 @@
 import {z} from 'zod';
-import {Fault,entityName,recordId,digest,stable,json,compactReceipt} from './core.js';
+import {Fault,entityName,recordId,digest,stable,json,compactReceipt,tabRange,columnName,metadataHeaders} from './core.js';
 import {transaction} from './db.js';
 import {getSettings} from './settings.js';
+import {importRecord} from './sync.js';
+import {destinationSheets} from './sheetDestinations.js';
 import compatibility from './schemaCompatibility.cjs';
 const {compatibleHeaders}=compatibility;
 const mappedClean=new Map();
@@ -29,6 +31,90 @@ export async function status(pool,key,spreadsheetId){
     entities:entities.map(e=>({...e,headers:json(e.headers)}))};
 }
 // Đọc một dòng theo mã hoặc một cột, không tải cả bảng.
+async function resolveSheets(pool, key, options) {
+  if (options.sheets) return options.sheets;
+  if (options.sheetsFactory) {
+    const settings = await getSettings(pool, key);
+    return options.sheetsFactory(settings);
+  }
+  return null;
+}
+
+async function readSingleArchivedRow(pool, e, m, sheets) {
+  const fullHeaders = [...json(e.headers), ...metadataHeaders];
+  let targetSheets = sheets;
+  let tabName = e.tab_name;
+  let sheetRow = m.sheet_row;
+  if (sheets.forSpreadsheet) {
+    const [[loc]] = await pool.query('SELECT * FROM sheet_locations WHERE entity=? AND id=?', [e.name, m.id]);
+    if (loc) {
+      targetSheets = destinationSheets(sheets, loc.spreadsheet_id);
+      tabName = loc.tab_name || e.tab_name;
+      sheetRow = loc.sheet_row;
+    }
+  }
+  const tab = tabRange(tabName);
+  const [header = []] = await targetSheets.read(tab + '!1:1');
+  if (JSON.stringify(fullHeaders) !== JSON.stringify(header)) throw new Fault(409, 'SHEET_HEADER_MISMATCH');
+  const values = await targetSheets.read(`${tab}!A${sheetRow}:${columnName(fullHeaders.length - 1)}${sheetRow}`);
+  const row = importRecord(e, values[0] || [], fullHeaders);
+  if (!row || row.id !== m.id) throw new Fault(409, 'SHEET_ROW_MOVED');
+  return row.data;
+}
+
+async function populateArchivedRows(pool, entity, candidates, sheets) {
+  const fullHeaders = [...json(entity.headers), ...metadataHeaders];
+  const ids = candidates.map(c => c.id || c.map_id);
+  const locMap = new Map();
+  if (sheets.forSpreadsheet) {
+    const [locations] = await pool.query(
+      `SELECT * FROM sheet_locations WHERE entity=? AND id IN (${ids.map(() => '?').join(',')})`,
+      [entity.name, ...ids]
+    );
+    for (const loc of locations) locMap.set(loc.id, loc);
+  }
+
+  const groups = new Map();
+  for (const c of candidates) {
+    const expectedId = c.id || c.map_id;
+    const loc = locMap.get(expectedId);
+    const targetSpreadsheetId = loc?.spreadsheet_id || sheets.config?.spreadsheetId;
+    const tabName = loc?.tab_name || entity.tab_name;
+    const physicalRow = loc?.sheet_row || c.sheet_row;
+    const groupKey = `${targetSpreadsheetId}|${tabName}`;
+
+    let grp = groups.get(groupKey);
+    if (!grp) {
+      const targetSheets = sheets.forSpreadsheet ? destinationSheets(sheets, targetSpreadsheetId) : sheets;
+      grp = { targetSheets, tabName, items: [] };
+      groups.set(groupKey, grp);
+    }
+    grp.items.push({ candidate: c, physicalRow, expectedId });
+  }
+
+  for (const grp of groups.values()) {
+    const tab = tabRange(grp.tabName);
+    const [header = []] = await grp.targetSheets.read(tab + '!1:1');
+    if (JSON.stringify(fullHeaders) !== JSON.stringify(header)) {
+      throw new Fault(409, 'SHEET_HEADER_MISMATCH');
+    }
+    const ranges = grp.items.map(item =>
+      `${tab}!A${item.physicalRow}:${columnName(fullHeaders.length - 1)}${item.physicalRow}`
+    );
+    const results = await grp.targetSheets.batchRead(ranges);
+    for (let i = 0; i < grp.items.length; i++) {
+      const item = grp.items[i];
+      const rangeResult = results[i];
+      const values = rangeResult?.values?.[0] || [];
+      const imported = importRecord(entity, values, fullHeaders);
+      if (!imported || imported.id !== item.expectedId) {
+        throw new Fault(409, 'SHEET_ROW_MOVED');
+      }
+      item.candidate.data = JSON.stringify(imported.data);
+    }
+  }
+}
+
 function readLookup(query,headers){
   const id=query.id==null||query.id===''?null:String(query.id);
   const column=query.column==null||query.column===''?null:String(query.column);
@@ -53,12 +139,13 @@ function readLookup(query,headers){
   if(status){sql+=" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Status'))=?";args.push(status);}
   return {single:false,sql:sql+' ORDER BY m.sheet_row LIMIT 101',args};
 }
-export async function readRows(pool,key,entity,query){
+export async function readRows(pool,key,entity,query,options={}){
   await assertBinding(pool,key,query.spreadsheetId);
   const [[e]]=await pool.query('SELECT * FROM entities WHERE name=?',[entity]);
   if(!e)throw new Fault(404,'ENTITY_NOT_FOUND');
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
-  if(Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
+  const sheets = await resolveSheets(pool, key, options);
+  if(!sheets && Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
   const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids',latest=query.view==='latest';
   const stateKey=query.key==null||query.key===''?null:String(query.key);
   const headers=json(e.headers);
@@ -70,10 +157,19 @@ export async function readRows(pool,key,entity,query){
     const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
     const more=!lookup.single&&found.length>100;
     const kept=more?found.slice(0,100):found;
+    if(lookup.single && !kept.length && sheets){
+      const [[m]]=await pool.query('SELECT id,sheet_row,archived_at,deleted_at FROM row_map WHERE entity=? AND id=?',[entity,query.id]);
+      if(m?.archived_at && !m.deleted_at){
+        const rowData=await readSingleArchivedRow(pool,e,m,sheets);
+        if(rowData){
+          return {ok:true,headers,rows:[headers.map(name=>rowData[name]??'')],upper,hasMore:false,nextAfter:null};
+        }
+      }
+    }
     return {ok:true,headers,rows:kept.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:more,nextAfter:null};
   }
   if(after===0)await assertMapped(pool,entity);
-  const columns=ids?'r.id,m.sheet_row':'r.id,r.data,m.sheet_row';
+  const columns=ids?'r.id,m.sheet_row,m.id AS map_id,m.archived_at':'r.id,r.data,m.sheet_row,m.id AS map_id,m.archived_at';
   let revision=null;
   if(stateKey){
     const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
@@ -102,14 +198,24 @@ export async function readRows(pool,key,entity,query){
     WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row<=?
     ) ranked JOIN records content ON content.entity=? AND content.id=ranked.id
     WHERE (ranked.numeric_revisions=0 OR ranked.revision_rank=1) AND ranked.sheet_row>? ORDER BY ranked.sheet_row LIMIT ?`,[entity,upper,entity,after,limit+1])
-    :await pool.query(`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
-    WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`,stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+    :await pool.query(stateKey
+      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`
+      :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id AND r.deleted_at IS NULL WHERE m.entity=? AND m.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
+      stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+  if(!ids){
+    const archivedCandidates = candidates.filter(r => !r.data && r.archived_at);
+    if(archivedCandidates.length > 0){
+      if(!sheets) throw new Fault(503, 'SHEETS_UNAVAILABLE', 'Không thể đọc dữ liệu lưu trữ từ Google Sheets.');
+      await populateArchivedRows(pool, e, archivedCandidates, sheets);
+    }
+  }
   const selected=[];let bytes=0;
   for(const row of candidates){
     if(selected.length>=limit)break;
+    const rowId = row.id || row.map_id;
     const size=ids?0:Buffer.byteLength(typeof row.data==='string'?row.data:JSON.stringify(row.data??null));
     if(selected.length&&bytes+size>7000000)break;
-    selected.push(row);bytes+=size;
+    selected.push({...row, id: rowId});bytes+=size;
   }
   const hasMore=candidates.length>selected.length;
   return {ok:true,...(latest?{latestOnly:true}:{}),headers,rows:ids?selected.map(r=>[r.id]):selected.map(r=>headers.map(h=>json(r.data)[h]??'')),upper,
