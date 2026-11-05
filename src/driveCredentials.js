@@ -7,7 +7,7 @@ const id=z.string().min(1).max(100).regex(/^[\w.-]+$/).refine(value=>value!=='pr
 const secret=z.string().max(8192).refine(v=>!/[\x00-\x1f]/.test(v));
 const credentialSchema=z.object({id:id.refine(value=>!['current','environment'].includes(value)).optional(),label:z.string().trim().min(1).max(100),clientId:z.string().trim().min(1).max(512).optional(),clientSecret:secret.optional(),refreshToken:secret.optional(),folderId:z.string().min(1).max(200).regex(/^[\w-]+$/).optional(),enabled:z.boolean()}).strict();
 const saveSchema=z.object({revision:z.number().int().nonnegative(),credentials:z.array(credentialSchema).max(100)}).strict();
-const acquireSchema=z.object({consumer:z.enum(['chamcong','hdoi']),currentId:id.optional(),reason:z.enum(['initial','userRateLimitExceeded']).default('initial'),requestId:z.string().min(1).max(128).regex(/^[\w:.-]+$/)}).strict();
+const acquireSchema=z.object({consumer:z.enum(['chamcong','hdoi']),currentId:id.optional(),reason:z.enum(['initial','userRateLimitExceeded','invalid_grant']).default('initial'),requestId:z.string().min(1).max(128).regex(/^[\w:.-]+$/)}).strict();
 const empty=()=>({credentials:[],identities:[],consumers:{},receipts:{},events:[],cooldowns:{}});
 const mask=c=>c?.refreshToken?'••••••••':null;
 const fail=(status,code)=>new Fault(status,code);
@@ -80,7 +80,7 @@ export function createDriveCredentialRegistry(pool,config,{driveFactory=defaultD
         if(state.receipts[receiptKey])return {value:state.receipts[receiptKey]};
         const current=state.consumers[req.consumer];
         let assignment=current;
-        if(!current || (req.reason==='userRateLimitExceeded'&&req.currentId===current.credential.id)) {
+        if(!current || (['userRateLimitExceeded','invalid_grant'].includes(req.reason)&&req.currentId===current.credential.id)) {
           const cooldowns=state.cooldowns||={},at=now(),epoch=Date.parse(at);
           if(current)cooldowns[req.consumer+':'+current.credential.id]=epoch+60000;
           const available=c=>c.enabled&&(cooldowns[req.consumer+':'+c.id]||0)<=epoch;
