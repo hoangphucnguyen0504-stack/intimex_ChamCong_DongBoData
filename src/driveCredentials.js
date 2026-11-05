@@ -5,7 +5,7 @@ import {decrypt,encrypt,equal,Fault} from './core.js';
 
 const id=z.string().min(1).max(100).regex(/^[\w.-]+$/).refine(value=>value!=='prototype'&&!Object.hasOwn(Object.prototype,value));
 const secret=z.string().max(8192).refine(v=>!/[\x00-\x1f]/.test(v));
-const credentialSchema=z.object({id:id.refine(value=>!['current','environment'].includes(value)).optional(),label:z.string().trim().min(1).max(100),clientId:z.string().trim().min(1).max(512),clientSecret:secret.optional(),refreshToken:secret.optional(),folderId:z.string().min(1).max(200).regex(/^[\w-]+$/),enabled:z.boolean()}).strict();
+const credentialSchema=z.object({id:id.refine(value=>!['current','environment'].includes(value)).optional(),label:z.string().trim().min(1).max(100),clientId:z.string().trim().min(1).max(512).optional(),clientSecret:secret.optional(),refreshToken:secret.optional(),folderId:z.string().min(1).max(200).regex(/^[\w-]+$/).optional(),enabled:z.boolean()}).strict();
 const saveSchema=z.object({revision:z.number().int().nonnegative(),credentials:z.array(credentialSchema).max(100)}).strict();
 const acquireSchema=z.object({consumer:z.enum(['chamcong','hdoi']),currentId:id.optional(),reason:z.enum(['initial','userRateLimitExceeded']).default('initial'),requestId:z.string().min(1).max(128).regex(/^[\w:.-]+$/)}).strict();
 const empty=()=>({credentials:[],identities:[],consumers:{},receipts:{},events:[],cooldowns:{}});
@@ -52,7 +52,8 @@ export function createDriveCredentialRegistry(pool,config,{driveFactory=defaultD
           const credentialId=c.id||randomUUID();if(seen.has(credentialId))throw fail(400,'DRIVE_DUPLICATE_ID');seen.add(credentialId);
           const old=state.credentials.find(x=>x.id===credentialId)||identities.find(x=>x.id===credentialId);
           const merged={...c,id:credentialId,clientSecret:c.clientSecret||old?.clientSecret,refreshToken:c.refreshToken||old?.refreshToken};
-          if(!merged.clientSecret||!merged.refreshToken)throw fail(400,'DRIVE_SECRETS_REQUIRED');
+          const tokenOnly=!merged.clientId&&!merged.clientSecret&&!merged.folderId;
+          if(!merged.refreshToken||(!tokenOnly&&(!merged.clientId||!merged.clientSecret||!merged.folderId)))throw fail(400,'DRIVE_SECRETS_REQUIRED');
           // A file's owner identity is permanent. Replacing OAuth material creates
           // a new identity so archived consumers can still read existing files.
           if(old&&['clientId','clientSecret','refreshToken','folderId'].some(field=>old[field]!==merged[field]))merged.id=randomUUID();
@@ -65,6 +66,7 @@ export function createDriveCredentialRegistry(pool,config,{driveFactory=defaultD
     },
     test:credentialId=>transaction(async state=>{
       const c=state.credentials.find(c=>c.id===credentialId);if(!c)throw fail(404,'DRIVE_CREDENTIAL_NOT_FOUND');
+      if(!c.clientId)throw new Fault(400,'DRIVE_TEST_AT_CONSUMER','Token dùng cấu hình của dịch vụ; kiểm tra tại dịch vụ nhận token.');
       try {const client=await driveFactory({...c});const result=await client.test();
         if(result?.data?.mimeType&&result.data.mimeType!=='application/vnd.google-apps.folder')throw Error();
         return {value:{ok:true,id:c.id,status:'accessible'}};

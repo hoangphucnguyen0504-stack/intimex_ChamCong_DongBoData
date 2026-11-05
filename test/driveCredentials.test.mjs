@@ -17,6 +17,17 @@ function fakePool() {
   }};
 }
 const credentials=['a','b','c'].map(id=>({id,label:id,clientId:`${id}.apps.googleusercontent.com`,clientSecret:`secret-${id}`,refreshToken:`refresh-${id}`,folderId:`folder_${id}`,enabled:true}));
+test('token-only entries are encrypted, masked and issued without shared OAuth secrets',async()=>{
+  const pool=fakePool(),registry=createDriveCredentialRegistry(pool,{CONFIG_ENCRYPTION_KEY:key});
+  const saved=await registry.save({revision:0,credentials:[{label:'Token dự phòng 1',refreshToken:'token-only-secret',enabled:true}]});
+  assert.equal(JSON.stringify(saved).includes('token-only-secret'),false);
+  const c=saved.credentials[0];
+  await registry.save({revision:1,credentials:[{id:c.id,label:c.label,refreshToken:'',enabled:true}]});
+  const issued=await registry.acquire({consumer:'chamcong',requestId:'token-only-request'});
+  assert.equal(issued.credential.refreshToken,'token-only-secret');
+  assert.equal(issued.credential.clientId,undefined);
+  await assert.rejects(registry.test(c.id),{code:'DRIVE_TEST_AT_CONSUMER'});
+});
 test('encrypted storage, masked admin output, blank secret preservation and optimistic updates',async()=>{
   const pool=fakePool(),registry=createDriveCredentialRegistry(pool,{CONFIG_ENCRYPTION_KEY:key});
   const result=await registry.save({revision:0,credentials});

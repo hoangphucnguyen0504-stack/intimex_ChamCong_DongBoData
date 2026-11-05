@@ -55,15 +55,19 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
       const updateTitle=()=>{title.textContent=(index+1)+'. '+(credential.label||'Tài khoản Drive mới');code.textContent=(credential.enabled===false?'Đã tắt':'Đang bật')+' · '+(credential.id||'Chưa lưu')+' · Bấm để chỉnh sửa';};
       updateTitle();head.append(title,code);card.addEventListener('toggle',()=>credential.editing=card.open);
       const change=key=>value=>{credential[key]=value;dirty=true;};
-      fields.append(input('Tên tài khoản / cấu hình',credential.label,change('label'),{maxLength:100}),
+      if(credential.clientId)fields.append(input('Tên tài khoản / cấu hình',credential.label,change('label'),{maxLength:100}),
         input('OAuth Client ID',credential.clientId,change('clientId'),{maxLength:512}),
         input('OAuth Client Secret',credential.clientSecret,change('clientSecret'),{type:'password',required:!credential.clientSecretConfigured,placeholder:credential.clientSecretConfigured?'Đã lưu — để trống để giữ nguyên':''}),
         input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':''}),
         input('Thư mục Drive ID',credential.folderId,change('folderId'),{maxLength:200}));
+      else {
+        fields.append(input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':'Dán refresh token'}));
+        const help=document.createElement('p');help.className='muted';help.textContent='Dùng Client ID, Client Secret và thư mục sẵn có của dịch vụ nhận token.';fields.append(help);
+      }
       card.append(head,fields,checkbox('Cho phép cấp cấu hình này',credential.enabled!==false,change('enabled')));
       card.addEventListener('input',updateTitle);card.addEventListener('change',updateTitle);
       const controls=actions(credentials,index,renderCredentials,()=>dirty=true);
-      if(credential.id)controls.append(button('Kiểm tra quyền thư mục',async()=>{
+      if(credential.id&&credential.clientId)controls.append(button('Kiểm tra quyền thư mục',async()=>{
         await api('/admin/drive-credentials/'+encodeURIComponent(credential.id)+'/test',{method:'POST'});
         notice('Kết nối Drive và quyền thư mục hợp lệ.');
       }));
@@ -116,7 +120,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
   });
   $('#add-drive-credential').addEventListener('click',()=>{
     if(!driveLoaded||credentials.length>=100)return;
-    credentials.push({label:'',clientId:'',clientSecret:'',refreshToken:'',folderId:'',enabled:true,editing:true});dirty=true;renderCredentials();
+    credentials.push({label:'Token dự phòng '+(credentials.length+1),refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
   });
   $('#reload-drive-credentials').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive()));
   $('#refresh-drive-issuance').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive(false)));
@@ -124,7 +128,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
   $('#drive-credentials-form').addEventListener('submit',event=>{
     event.preventDefault();if(!driveLoaded)return;
     busy(event.submitter,async()=>{
-      const payload=credentials.map(({id,label,clientId,clientSecret,refreshToken,folderId,enabled})=>({...(id?{id}:{}),label:label.trim(),clientId:clientId.trim(),clientSecret,refreshToken,folderId:folderId.trim(),enabled}));
+      const payload=credentials.map(({id,label,clientId,clientSecret,refreshToken,folderId,enabled})=>({...(id?{id}:{}),label:label.trim(),...(clientId?{clientId:clientId.trim(),clientSecret,folderId:folderId.trim()}:{}),refreshToken,enabled}));
       const data=await api('/admin/drive-credentials',{method:'PUT',body:JSON.stringify({revision,credentials:payload})});
       credentials=data.credentials.map(item=>({...item,clientSecret:'',refreshToken:''}));revision=data.revision;dirty=false;renderCredentials();renderIssuance(data);
       notice('Đã lưu danh sách Drive. Các dịch vụ giữ cấu hình đã nhận cho đến lần chuyển tiếp theo.');
