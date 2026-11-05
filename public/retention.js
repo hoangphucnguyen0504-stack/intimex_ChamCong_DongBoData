@@ -4,6 +4,23 @@ export function mountRetention({api, notice, busy, date, table, button}) {
   let activeJobId = null;
   let passwordResolver = null;
   let passwordRejecter = null;
+  let policies = [];
+
+  function editPolicy(policy) {
+    const form = $('#retention-policy-form');
+    form.elements.entity.value = policy?.entity || '';
+    form.elements.retentionDays.value = policy?.retention_days ?? 30;
+    form.elements.scheduleHhmm.value = policy?.schedule_hhmm || '02:00';
+    form.elements.enabled.checked = Boolean(Number(policy?.enabled || 0));
+    $('#retention-policy-editor-title').textContent = policy ? 'Chỉnh sửa cấu hình đã lưu' : 'Thêm cấu hình cuốn chiếu';
+    $('#save-retention-policy').textContent = policy ? 'Lưu thay đổi cấu hình' : 'Lưu cấu hình cuốn chiếu';
+  }
+
+  $('#retention-auto-entity').addEventListener('change', () => {
+    const entity = $('#retention-auto-entity').value || null;
+    editPolicy(policies.find(policy => (policy.entity || null) === entity));
+    $('#retention-auto-entity').value = entity || '';
+  });
 
   const $ = selector => document.querySelector(selector);
 
@@ -89,14 +106,19 @@ export function mountRetention({api, notice, busy, date, table, button}) {
   $('#manual-cancel-preview-btn').addEventListener('click', invalidatePreview);
 
   // Render Auto Policies
-  function renderPolicies(policies) {
-    table('#retention-policies-table', policies || [], p => [
+  function renderPolicies(rows) {
+    table('#retention-policies-table', rows || [], p => [
       p.entity || 'Tất cả loại dữ liệu',
       p.retention_days + ' ngày',
       p.schedule_hhmm + ' (VN)',
       p.enabled ? 'Đang bật' : 'Đang tắt',
       date(p.last_run_at),
-      p.enabled ? date(p.next_run_at) : '—'
+      p.enabled ? date(p.next_run_at) : '—',
+      button('Chỉnh sửa', () => {
+        editPolicy(p);
+        $('#retention-policy-form').scrollIntoView({behavior:'smooth', block:'start'});
+        $('#retention-policy-form').elements.retentionDays.focus();
+      })
     ]);
   }
 
@@ -105,6 +127,8 @@ export function mountRetention({api, notice, busy, date, table, button}) {
     try {
       const res = await api('/admin/retention/policies');
       eligibleEntities = res.entities || [];
+      policies = res.policies || [];
+      const selectedEntity = $('#retention-auto-entity').value || null;
 
       // Populate auto policy entity select
       const select = $('#retention-auto-entity');
@@ -117,7 +141,10 @@ export function mountRetention({api, notice, busy, date, table, button}) {
       }
 
       renderEntityCheckboxes();
-      renderPolicies(res.policies || []);
+      const savedPolicy = policies.find(policy => (policy.entity || null) === selectedEntity);
+      editPolicy(savedPolicy);
+      if (!savedPolicy) select.value = selectedEntity || '';
+      renderPolicies(policies);
       await loadHistory();
     } catch (e) {
       notice('Lỗi tải dữ liệu dọn MySQL: ' + e.message, true);

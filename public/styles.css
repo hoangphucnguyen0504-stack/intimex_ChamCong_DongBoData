@@ -8,3 +8,4 @@
 .modal-overlay{position:fixed;inset:0;background:rgba(20,44,36,.5);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:999;padding:20px}
 .modal-dialog{background:#fff;border:1px solid var(--border);border-radius:14px;padding:26px;max-width:480px;width:100%;box-shadow:0 18px 50px rgba(0,0,0,.22)}
 .modal-head h3{margin:0 0 8px;font-size:1.25rem}
+.config-list-item>summary{cursor:pointer;padding:4px 0;overflow-wrap:anywhere;min-height:44px}.config-list-item>summary strong{font-size:1rem}.config-list-item>summary small{display:block;color:#6c7e75;font-weight:400;margin:4px 0 0 18px}.config-list-item[open]>summary{border-bottom:1px solid var(--border);margin-bottom:18px;padding-bottom:14px}#sheet-targets-form>.check{margin:18px 0}summary:focus-visible{outline:3px solid #8fd4b5;outline-offset:3px}

@@ -90,6 +90,14 @@ export async function savePolicy(pool, {entity, retentionDays, scheduleHhmm, ena
     throw new Fault(400, 'INVALID_RETENTION_DAYS', 'Số ngày giữ lại từ 1–3650.');
   }
   const nextRun = computeNextRun(scheduleHhmm);
+  // MySQL UNIQUE permits multiple NULLs: explicitly update the existing global policy.
+  const [[existing]] = await pool.query('SELECT * FROM retention_policies WHERE entity <=> ?', [entity || null]);
+  if (existing) {
+    await pool.query(
+      'UPDATE retention_policies SET retention_days=?, schedule_hhmm=?, enabled=?, next_run_at=? WHERE entity <=> ?',
+      [retentionDays, scheduleHhmm, enabled ? 1 : 0, nextRun, entity || null]
+    );
+  } else {
   await pool.query(
     `INSERT INTO retention_policies (entity, retention_days, schedule_hhmm, enabled, next_run_at)
      VALUES (?, ?, ?, ?, ?)
@@ -97,6 +105,7 @@ export async function savePolicy(pool, {entity, retentionDays, scheduleHhmm, ena
        schedule_hhmm=VALUES(schedule_hhmm), enabled=VALUES(enabled), next_run_at=VALUES(next_run_at)`,
     [entity || null, retentionDays, scheduleHhmm, enabled ? 1 : 0, nextRun]
   );
+  }
   const [[p]] = await pool.query('SELECT * FROM retention_policies WHERE entity <=> ?', [entity || null]);
   await pool.query(
     'INSERT INTO retention_audit(policy_id,entity,record_count,action) VALUES(?,?,0,?)',

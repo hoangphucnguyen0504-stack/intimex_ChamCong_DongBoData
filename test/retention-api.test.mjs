@@ -41,7 +41,11 @@ async function fixture(t) {
       return [{affectedRows: 1}];
     }
     if (sql.includes('SELECT * FROM retention_policies WHERE entity <=>')) {
-      return [[policies[0]]];
+      return [policies.filter(p => p.entity === args[0])];
+    }
+    if (sql.includes('UPDATE retention_policies SET retention_days=')) {
+      policies = policies.map(p => p.entity === args[4] ? {...p,retention_days:args[0],schedule_hhmm:args[1],enabled:args[2],next_run_at:args[3]} : p);
+      return [{affectedRows:1}];
     }
     if (sql.includes('INSERT INTO retention_audit')) {
       audit.push({action: args[3], entity: args[1], record_count: args[2]});
@@ -137,6 +141,19 @@ test('POST /admin/retention/policies requires valid password and saves policy', 
   const body = await ok.json();
   assert.equal(body.ok, true);
   assert.equal(body.policy.retention_days, 30);
+});
+
+test('editing global retention policy updates it and can disable it', async t => {
+  const {request} = await fixture(t);
+  const save = body => request('/admin/retention/policies', {method:'POST',body:{entity:null,password:'mypassword123',...body}});
+  assert.equal((await save({retentionDays:30,scheduleHhmm:'02:00',enabled:true})).status,200);
+  const edited = await save({retentionDays:75,scheduleHhmm:'04:25',enabled:false});
+  assert.equal(edited.status,200);
+  const body = await (await request('/admin/retention/policies')).json();
+  assert.equal(body.policies.length,1);
+  assert.equal(body.policies[0].retention_days,75);
+  assert.equal(body.policies[0].schedule_hhmm,'04:25');
+  assert.equal(body.policies[0].enabled,0);
 });
 
 test('POST /admin/retention/preview returns counts and POST /admin/retention/jobs creates durable job', async t => {
