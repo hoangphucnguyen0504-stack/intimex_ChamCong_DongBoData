@@ -140,37 +140,38 @@ Authorization: Bearer &lt;API_TOKEN&gt;
       <div class="panel">
         <div class="section-head">
           <div>
-            <h2>1. Xóa cuốn chiếu tự động</h2>
-            <p class="muted">Tự động dọn dẹp các bản ghi cũ đủ điều kiện theo lịch hàng ngày (giờ Việt Nam). Dữ liệu trên Google Sheets được giữ nguyên 100%.</p>
+            <h2>Xóa cuốn chiếu tự động</h2>
+            <p class="muted">Dọn bản ghi cũ theo lịch hằng ngày. Dữ liệu trên Google Sheets được giữ nguyên.</p>
           </div>
         </div>
         <form id="retention-policy-form" class="form-grid">
-          <div class="full"><h3 id="retention-policy-editor-title">Thêm cấu hình cuốn chiếu</h3><p class="muted">Chọn loại dữ liệu để sửa cấu hình đã lưu, hoặc bấm “Chỉnh sửa” trong bảng bên dưới. Bỏ chọn bật tự động rồi lưu để tắt lịch.</p></div>
+          <div class="full retention-editor-heading"><h3 id="retention-policy-editor-title">Thêm cấu hình cuốn chiếu</h3><p class="muted">Chọn loại dữ liệu và thiết lập thời gian lưu.</p></div>
           <label>Loại dữ liệu
             <select name="entity" id="retention-auto-entity">
               <option value="">Tất cả loại dữ liệu hợp lệ</option>
             </select>
-            <small>Tài khoản, cấu hình và danh mục mặc định tự động được bảo vệ.</small>
+            <small>Tài khoản, cấu hình và danh mục được bảo vệ.</small>
           </label>
           <label>Số ngày giữ lại trong MySQL
             <input name="retentionDays" type="number" min="1" max="3650" value="30" required>
-            <small>Chỉ xóa bản ghi có ngày phát sinh cũ hơn số ngày này.</small>
+            <small>Chỉ dọn bản ghi cũ hơn số ngày đã chọn.</small>
           </label>
-          <label>Giờ chạy hàng ngày (Giờ Việt Nam)
+          <label>Giờ chạy hằng ngày
             <input name="scheduleHhmm" type="time" value="02:00" required>
-            <small>Định dạng HH:MM theo múi giờ Việt Nam (UTC+7).</small>
+            <small>Theo giờ Việt Nam (UTC+7).</small>
           </label>
-          <div class="full">
+          <div class="full retention-enable-row">
             <label class="check">
-              <input name="enabled" type="checkbox"> Bật xóa cuốn chiếu tự động
+              <input name="enabled" type="checkbox" role="switch"> Bật xóa cuốn chiếu tự động
             </label>
           </div>
-          <div class="actions full">
+          <div class="actions full retention-save-row">
+            <small>Cần nhập mật khẩu quản trị để lưu thay đổi.</small>
             <button type="submit" id="save-retention-policy">Lưu cấu hình cuốn chiếu</button>
           </div>
         </form>
 
-        <div style="margin-top: 24px;">
+        <div class="retention-policy-list">
           <h3>Chính sách tự động hiện tại</h3>
           <div class="table-scroll">
             <table>
