@@ -1,4 +1,5 @@
 export function mountRetention({api, notice, busy, date, table, button}) {
+  const $ = selector => document.querySelector(selector);
   let eligibleEntities = [];
   let currentPreview = null;
   let activeJobId = null;
@@ -21,8 +22,6 @@ export function mountRetention({api, notice, busy, date, table, button}) {
     editPolicy(policies.find(policy => (policy.entity || null) === entity));
     $('#retention-auto-entity').value = entity || '';
   });
-
-  const $ = selector => document.querySelector(selector);
 
   // Setup Password Modal
   const modal = $('#retention-password-modal');
