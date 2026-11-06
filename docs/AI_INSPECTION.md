@@ -1,17 +1,19 @@
 # Danh sách API AI
 
-Thêm tab **Danh sách API AI** trên trang quản trị DataDongBo. Hỗ trợ OpenAI và Google Gemini bằng model do quản trị viên nhập, khóa API mã hóa bằng `CONFIG_ENCRYPTION_KEY` hiện có, thứ tự dự phòng, hạn mức, thống kê ước tính và lịch sử cấu hình.
+Trang quản trị → **Danh sách API AI** hiển thị bảng kết nối. Mỗi dòng chỉ cần chọn **nhà cung cấp**, nhập **tên model** và **API key**. Hỗ trợ Google Gemini và OpenAI; nhập tên model thuần, không nhập URL.
 
-Khởi động lại web/worker bằng quy trình triển khai hiện có. Hàm migrate bổ sung các bảng AI từ `sql/ai.sql`; không có dependency mới. Không đổi hoặc làm mất khóa mã hóa hiện có.
+- **Thêm API** tạo dòng mới; điền đủ ba trường rồi **Lưu danh sách API**.
+- **↑ / ↓** đổi thứ tự ưu tiên. Worker thử lần lượt mỗi API đang bật và sẵn sàng, tối đa một lượt mỗi dòng trong một tác vụ.
+- **Đang bật / Tạm dừng** thay đổi trạng thái kết nối; lưu để áp dụng.
+- **Kiểm tra** kiểm tra kết nối đã lưu bằng dữ liệu giả. Đây là một lượt gọi thật tới nhà cung cấp.
+- **Xoá** gỡ dòng khỏi danh sách sau khi lưu.
 
-Luồng: Cham_cong gửi cấu trúc mẫu → `POST /v1/ai/jobs` → worker xử lý → `GET /v1/ai/jobs/:id?scope=...`. Bearer token hiện có bảo vệ các endpoint tích hợp. Endpoint `/admin/ai` dùng session/CSRF quản trị hiện có. Retry qua `POST /v1/ai/jobs/:id/retry` chỉ chấp nhận tác vụ lỗi/cần kiểm tra và còn nội dung.
+API key mã hóa bằng `CONFIG_ENCRYPTION_KEY` hiện có và không trả lại trình duyệt. Để trống giữ key cũ khi nhà cung cấp không đổi. Đổi nhà cung cấp cần key mới. Không đổi khóa mã hóa hiện có.
 
-Đăng nhập quản trị, mở tab mới, thêm nhà cung cấp, model hỗ trợ JSON schema (tên thuần), API key, thứ tự và hạn mức rồi lưu. Nhập đơn giá chính xác nếu đặt giới hạn USD. Giá trị 0 của ngân sách USD tắt giới hạn USD nhưng vẫn giữ giới hạn lượt gọi. Ngày thống kê theo UTC. Bấm kiểm tra kết nối sử dụng dữ liệu giả nhưng là lượt gọi thật có thể tính phí.
+Không còn cấu hình/tính toán chi phí, giá token, ngân sách, hạn mức lượt gọi/ngày hoặc giới hạn token do ứng dụng đặt. Các cấu hình cũ được bỏ qua ngay khi đọc, không cần lưu lại để gỡ hạn mức. Request gửi nhà cung cấp không kèm `maxOutputTokens`, `max_completion_tokens` hoặc `max_tokens`. Giới hạn riêng của nhà cung cấp/model vẫn áp dụng.
 
-429/hết hạn mức/xác thực/5xx có thể chuyển API tiếp theo (tối đa 3); timeout hoặc kết quả tính phí không rõ cần người dùng chủ động thử lại. Khóa không xuất hiện trong JSON quản trị trả về; để trống khi cập nhật giữ key trước đó nếu nhà cung cấp không đổi. Không lưu nội dung lỗi thô của nhà cung cấp.
+Giữ thời gian chờ kết nối, thời gian tạm nghỉ sau lỗi và cơ chế tránh gửi trùng. Khi timeout hoặc worker bị ngắt mà kết quả chưa rõ, người dùng phải chủ động thử lại. Không gọi vô hạn một API. Nhật ký chỉ ghi trạng thái và mã lỗi; số liệu lịch sử cũ không bị xóa nhưng không hiển thị/tính toán tiếp.
 
-Payload/kết quả mã hóa của tác vụ đã kết thúc được dọn sau 14 ngày. Nhật ký lượt gọi, giá ước tính và metadata còn giữ. Lượt không rõ mức sử dụng giữ dự trù chi phí. Cấu hình, số token và ước tính không thay hóa đơn thực tế.
+Endpoint quản trị `/admin/ai` dùng session/CSRF hiện có; tích hợp `/v1/ai/jobs` dùng bearer token. Request lưu cấu hình chỉ cần `{revision,providers}`; provider gồm `{id,vendor,model,enabled,apiKey?}`. `name` cũ được giữ để tương thích, không cần nhập. Các trường chi phí/hạn mức của client cũ bị loại bỏ.
 
-Kiểm thử: `node --test test/ai.test.mjs` và `npm test`; sử dụng pool/fetch giả, không gọi AI thật. Chưa chạy kiểm tra nhà cung cấp thật hoặc migration trên MySQL triển khai.
-
-Tài liệu luồng mapping đầy đủ ở dự án Cham_cong: `docs/INSPECTION_AI.md`.
+Cần triển khai lại DataDongBo web và worker; không cần migration mới hoặc dependency mới. Không tự khởi động worker thật khi kiểm thử. `node --test test/ai.test.mjs` dùng fetch/pool giả, không gọi AI thật. Tài liệu luồng mapping đầy đủ: `Cham_cong/docs/INSPECTION_AI.md`.

@@ -9,13 +9,13 @@ const field={key:'mass',position:'word/document.xml:p0',source:'business.netKg',
 const provider={id:'first',name:'Test',vendor:'openai',model:'test-model',apiKey:'not-a-real-key',enabled:true,pricingKnown:true,inputUsdPerMillion:1,outputUsdPerMillion:2};
 const config={revision:0,providers:[provider],maxAttempts:3,maxCallsPerDay:10,maxOutputTokens:1000,dailyBudgetUsd:1};
 
-test('OpenAI and Gemini calls use fixed origins, structured output and bounded token caps',async()=>{
+test('OpenAI and Gemini use structured output without application token caps',async()=>{
   for(const vendor of ['openai','gemini']){
     const result=await callProvider({...provider,vendor},payload,{maxOutputTokens:700,fetchImpl:async(url,request)=>{
       assert(new URL(url).hostname===(vendor==='openai'?'api.openai.com':'generativelanguage.googleapis.com'));
       assert.equal(request.redirect,'error');const body=JSON.parse(request.body);
-      if(vendor==='openai'){assert.equal(body.store,false);assert.equal(body.max_completion_tokens,700);assert.equal(body.response_format.json_schema.strict,true);}
-      else{assert.equal(body.generationConfig.maxOutputTokens,700);assert.equal(body.generationConfig.responseMimeType,'application/json');assert.equal(request.headers['x-goog-api-key'],provider.apiKey);}
+      if(vendor==='openai'){assert.equal(body.store,false);assert.equal(body.max_completion_tokens,undefined);assert.equal(body.max_tokens,undefined);assert.equal(body.response_format.json_schema.strict,true);}
+      else{assert.equal(body.generationConfig.maxOutputTokens,undefined);assert.equal(body.generationConfig.responseMimeType,'application/json');assert.equal(request.headers['x-goog-api-key'],provider.apiKey);}
       return Response.json(vendor==='openai'?{choices:[{message:{content:JSON.stringify({fields:[field]})},finish_reason:'stop'}],usage:{prompt_tokens:100,completion_tokens:50}}:{candidates:[{content:{parts:[{text:JSON.stringify({fields:[field]})}]},finishReason:'STOP'}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:50,thoughtsTokenCount:20}});
     }});
     assert.equal(result.result.fields[0].position,field.position);assert.deepEqual(result.usage,{input:100,output:vendor==='openai'?50:70});assert.equal(result.usageKnown,true);
@@ -63,12 +63,12 @@ test('fine-tuned OpenAI models retain compatible provider schemas and strict loc
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({fields:[{...field,confidence:93}]})}}],usage:{prompt_tokens:10,completion_tokens:20}});
   }}),error=>error.code==='AI_INVALID_OUTPUT_CONFIDENCE');
 });
-test('rate limits fail over, cooldown and maximum attempts are respected; uncertain calls stop',async()=>{
+test('rate limits fail over across the entire ordered list; cooldown and uncertain stops remain',async()=>{
   const calls=[],events=[];
   const result=await failover([{...provider,cooldownUntil:100},provider,{...provider,id:'second'}],payload,{now:()=>0,invoke:async p=>{calls.push(p.id);if(p.id==='first')throw new Fault(429,'AI_RATE_LIMIT');return {result:{fields:[field]},usage:{input:1,output:1}};},after:async(p,event)=>events.push([p.id,event.state])});
   assert.deepEqual(calls,['first','second']);assert.equal(result.providerId,'second');assert.deepEqual(events,[['first','failed'],['second','success']]);
   let attempts=0;
-  await assert.rejects(()=>failover([provider,{...provider,id:'next'}],payload,{maxAttempts:1,invoke:async()=>{attempts++;throw new Fault(503,'AI_SERVICE');}}));assert.equal(attempts,1);
+  await assert.rejects(()=>failover(Array.from({length:5},(_,i)=>({...provider,id:'api-'+i})),payload,{invoke:async()=>{attempts++;throw new Fault(503,'AI_SERVICE');}}));assert.equal(attempts,5);
   attempts=0;
   await assert.rejects(()=>failover([provider,provider],payload,{invoke:async()=>{attempts++;throw Object.assign(new Fault(503,'AI_TIMEOUT'),{uncertain:true});}}),e=>e.code==='AI_UNKNOWN');assert.equal(attempts,1);
 });
@@ -88,13 +88,13 @@ function memoryPool(){
     if(sql.startsWith('UPDATE ai_configuration')){state.cfg={revision:state.cfg.revision+1,encrypted:p[0]};return [{affectedRows:1}];}
     if(sql.startsWith('INSERT INTO ai_config_audit')){state.audit.push(p);return [{affectedRows:1}];}
     if(sql.startsWith('SELECT * FROM ai_provider_health'))return [state.health];
-    if(sql.startsWith('DELETE FROM ai_provider_health'))return [{affectedRows:1}];
+    if(sql.startsWith('DELETE FROM ai_provider_health')){state.health=state.health.filter(item=>item.provider_id!==p[0]);return [{affectedRows:1}];}
     if(sql.startsWith('INSERT INTO ai_provider_health')){state.health.push({provider_id:p[0],error_code:p[2]});return [{affectedRows:1}];}
     if(sql.startsWith('SELECT provider_id,COUNT'))return [[]];
     if(sql.startsWith('SELECT COUNT(*) calls'))return [[{calls:state.calls.length,cost:state.calls.reduce((sum,c)=>sum+c.cost,0)}]];
-    if(sql.startsWith('INSERT INTO ai_calls')){state.calls.push({id:p[0],job:p[1],provider:p[2],state:'running',cost:p[3]});return [{affectedRows:1}];}
+    if(sql.startsWith('INSERT INTO ai_calls')){state.calls.push({id:p[0],job:p[1],provider:p[2],state:'running',cost:0});return [{affectedRows:1}];}
     if(sql.startsWith('UPDATE ai_calls c JOIN'))return [{affectedRows:0}];
-    if(sql.startsWith('UPDATE ai_calls')){const c=state.calls.find(c=>c.id===p[6]);Object.assign(c,{state:p[0],input:p[1],output:p[2],cost:p[3]==='success'?p[4]:c.cost,error:p[5]});return [{affectedRows:1}];}
+    if(sql.startsWith('UPDATE ai_calls')){const c=state.calls.find(c=>c.id===p[2]);Object.assign(c,{state:p[0],error:p[1]});return [{affectedRows:1}];}
     if(sql.startsWith('INSERT IGNORE INTO ai_jobs')){if(!state.jobs.has(p[0]))state.jobs.set(p[0],{id:p[0],scope:p[1],fingerprint:p[2],payload_hash:p[3],encrypted_payload:p[4],state:'queued'});return [{affectedRows:1}];}
     if(sql.startsWith('SELECT id,scope')||sql.startsWith('SELECT * FROM ai_jobs WHERE id=')){const job=state.jobs.get(p[0]);return [[...(job&&(!p[1]||job.scope===p[1])?[job]:[])]];}
     if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'"))return [[...([...state.jobs.values()].filter(j=>j.state==='queued').slice(0,1))]];
@@ -114,7 +114,17 @@ test('provider secrets are encrypted, masked, preserved on blank updates and rev
   const {apiKey,...masked}=provider;await saveConfiguration(db,key,{...config,revision:1,providers:[masked]},'test-admin');
   assert.equal(decrypt(db.state.cfg.encrypted,key).providers[0].apiKey,provider.apiKey);
   await assert.rejects(()=>saveConfiguration(db,key,config,'test-admin'),e=>e.code==='AI_CONFIG_REVISION');
-  assert.throws(()=>configurationSchema.parse({...config,providers:[{...provider,baseURL:'http://localhost/'}]}));
+  assert.equal(configurationSchema.parse({...config,providers:[{...provider,baseURL:'http://localhost/'}]}).providers[0].baseURL,undefined);
+});
+test('fixing a model clears its stale cooldown without changing the key; unchanged saves preserve cooldown',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'test-admin');
+  db.state.health=[{provider_id:provider.id,error_code:'AI_AUTH',cooldown_until:new Date(Date.now()+3600000).toISOString()}];
+  const {apiKey,...preserved}=provider;
+  await saveConfiguration(db,key,{revision:1,providers:[preserved]},'test-admin');
+  assert.equal((await publicConfiguration(db,key)).providers[0].health.error_code,'AI_AUTH');
+  await saveConfiguration(db,key,{revision:2,providers:[{...preserved,model:'fixed-model'}]},'test-admin');
+  assert.equal((await publicConfiguration(db,key)).providers[0].health,null);
+  assert.equal(decrypt(db.state.cfg.encrypted,key).providers[0].apiKey,apiKey);
 });
 test('durable jobs are idempotent, encrypted and scope guarded; worker commits results',async()=>{
   const db=memoryPool();await saveConfiguration(db,key,config,'admin');
@@ -127,24 +137,29 @@ test('durable jobs are idempotent, encrypted and scope guarded; worker commits r
   const done=await getJob(db,key,first.job.id,'company-a');assert.equal(done.job.state,'success');assert.equal(done.job.result.fields[0].key,'mass');
   await processNext(db,key,{invoke:async()=>{calls++;}});assert.equal(calls,1);assert.equal(db.state.calls[0].state,'success');
 });
-test('daily call budgets prevent paid calls; retry of ambiguous jobs requires explicit action',async()=>{
-  const db=memoryPool();await saveConfiguration(db,key,{...config,maxCallsPerDay:1},'admin');
+test('legacy daily budgets and token settings are ignored; explicit retry still prevents ambiguous duplicate calls',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,{...config,maxCallsPerDay:1,dailyBudgetUsd:0.000001},'admin');
+  const published=await publicConfiguration(db,key);
+  assert.deepEqual(Object.keys(published).sort(),['providers','revision']);
+  assert.equal(published.providers[0].pricingKnown,undefined);assert.equal(published.providers[0].inputUsdPerMillion,undefined);
   const input={requestId:'request-123',scope:'company-a',fingerprint:'a'.repeat(64),payload};
   const first=await submit(db,key,input);let calls=0;
   await processNext(db,key,{invoke:async()=>{calls++;throw Object.assign(new Fault(503,'AI_TIMEOUT'),{uncertain:true});}});
   assert.equal((await getJob(db,key,first.job.id,'company-a')).job.state,'needs_review');
-  await retryJob(db,first.job.id,'company-a');
   await processNext(db,key,{invoke:async()=>{calls++;}});assert.equal(calls,1);
-  assert.equal((await getJob(db,key,first.job.id,'company-a')).job.errorCode,'AI_BUDGET_LIMIT');
+  await retryJob(db,first.job.id,'company-a');
+  await processNext(db,key,{invoke:async()=>{calls++;return {result:{fields:[field]}};}});
+  assert.equal(calls,2);assert.equal((await getJob(db,key,first.job.id,'company-a')).job.state,'success');
 });
-test('worker records billed tokens for rejected output and retains reserves when usage is unknown',async()=>{
-  for(const usageKnown of [true,false]){
-    const db=memoryPool();await saveConfiguration(db,key,config,'admin');
-    const job=await submit(db,key,{requestId:'invalid-output',scope:'test-company',fingerprint:'b'.repeat(64),payload});
-    await processNext(db,key,{invoke:async()=>{throw Object.assign(new Fault(502,'AI_INVALID_OUTPUT_CONFIDENCE'),{usageKnown,usage:{input:180,output:400}});}});
-    const call=db.state.calls[0];assert.equal(call.state,'failed');assert.equal(call.input,180);assert.equal(call.output,400);
-    assert.equal(call.error,'AI_INVALID_OUTPUT_CONFIDENCE');
-    if(usageKnown)assert.equal(call.cost,(180+400*2)/1e6);else assert(call.cost>(180+400*2)/1e6);
-    assert.equal((await getJob(db,key,job.job.id,'test-company')).job.errorCode,'AI_INVALID_OUTPUT_CONFIDENCE');
+test('old stored configuration cannot re-enable cost or token limits before it is resaved',async()=>{
+  const db=memoryPool();db.state.cfg={revision:4,encrypted:encrypt({...config,maxCallsPerDay:1,maxOutputTokens:256,dailyBudgetUsd:0.000001},key)};
+  const published=await publicConfiguration(db,key);
+  assert.equal(published.maxOutputTokens,undefined);assert.equal(published.maxCallsPerDay,undefined);assert.equal(published.dailyBudgetUsd,undefined);
+  let calls=0;
+  for(let i=0;i<3;i++){
+    await submit(db,key,{requestId:'new-job-'+i,scope:'test-company',fingerprint:'b'.repeat(64),payload});
+    await processNext(db,key,{invoke:async()=>{calls++;return {result:{fields:[]}};}});
   }
+  assert.equal(calls,3);assert.equal(db.state.calls.length,3);
+  const stored=decrypt(db.state.cfg.encrypted,key);assert.equal(stored.maxCallsPerDay,1,'reading does not rewrite legacy configuration');
 });

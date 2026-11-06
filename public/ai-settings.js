@@ -1,64 +1,78 @@
 const node=(tag,text,className)=>{const e=document.createElement(tag);if(text)e.textContent=text;if(className)e.className=className;return e;};
+const vendors={gemini:'Google Gemini',openai:'OpenAI'};
 export function mountAISettings({api,notice,busy,date}){
   const stylesheet=node('link');stylesheet.rel='stylesheet';stylesheet.href='/ai-settings.css';document.head.append(stylesheet);
   const nav=node('button','Danh sách API AI');nav.dataset.tab='ai';document.querySelector('aside nav').append(nav);
-  const page=node('section');page.dataset.page='ai';page.hidden=true;document.querySelector('.workspace').append(page);
-  const intro=node('div',null,'panel');intro.append(node('h2','Danh sách API AI'),node('p','Key được mã hoá tại DataDongBo và không trả về trình duyệt. Worker phân tích mẫu; thứ tự từ trên xuống là thứ tự ưu tiên. Kiểm tra kết nối có thể phát sinh một lượt gọi AI.','muted'));
-  const status=node('p','Chưa tải cấu hình.','muted');status.setAttribute('role','status');intro.append(status);page.append(intro);
-  const form=node('form',null,'panel'),limits=node('div',null,'form-grid'),editor=node('div');
-  const actions=node('div',null,'actions'),add=node('button','Thêm API dự phòng'),save=node('button','Lưu cấu hình AI'),reload=node('button','Tải lại');
-  add.type=reload.type='button';save.type='submit';reload.className='ghost';actions.append(add,save,reload);form.append(limits,editor,actions);page.append(form);
-  const statistics=node('div',null,'panel'),history=node('div',null,'panel');page.append(statistics,history);
+  const page=node('section',null,'ai-manager');page.dataset.page='ai';page.hidden=true;document.querySelector('.workspace').append(page);
+  const panel=node('section',null,'panel ai-panel'),head=node('div',null,'ai-heading'),title=node('div');
+  title.append(node('span','KẾT NỐI MÔ HÌNH','ai-eyebrow'),node('h2','Danh sách API AI'),node('p','Chọn nhà cung cấp, nhập model và API key. Hệ thống ưu tiên từ trên xuống, tự chuyển sang API tiếp theo khi gặp lỗi.','muted'));
+  const add=button('+ Thêm API',()=>{const list=collect();list.push({id:crypto.randomUUID(),vendor:'gemini',model:'',enabled:true});render(list);markDirty();editor.querySelector('tbody tr:last-child input')?.focus();});add.className='ai-add';head.append(title,add);
+  const summary=node('div',null,'ai-summary'),count=node('span'),secure=node('span','API key được mã hóa','ai-secure');summary.append(count,secure);
+  const status=node('p','Chưa tải danh sách API.','ai-status');status.setAttribute('role','status');
+  const form=node('form'),editor=node('div'),footer=node('div',null,'ai-footer'),hint=node('span','Các thay đổi chỉ áp dụng sau khi lưu.','muted');
+  const controls=node('div',null,'ai-footer-actions'),reload=button('Tải lại',()=>{if(!dirty||confirm('Bỏ thay đổi chưa lưu và tải lại?'))open();}),save=node('button','Lưu danh sách API');save.type='submit';controls.append(reload,save);footer.append(hint,controls);form.append(editor,footer);
+  panel.append(head,summary,status,form);page.append(panel);
+  const history=node('details',null,'panel ai-history');history.append(node('summary','Lịch sử thay đổi'));const historyRows=node('div');history.append(historyRows);page.append(history);
   let config=null,rows=[],dirty=false,generation=0;
-  const input=(label,value,{type='text',name,min,max,step}={})=>{
-    const wrapper=node('label',label),control=node('input');control.type=type;control.name=name||'';
-    if(type==='checkbox'){control.checked=!!value;wrapper.className='ai-toggle';}else control.value=value??'';
-    for(const [key,val] of Object.entries({min,max,step}))if(val!==undefined)control[key]=val;
-    if(type==='password'){control.autocomplete='new-password';control.maxLength=2000;control.placeholder='Để trống để giữ key đã lưu';}
-    wrapper.append(control);return {wrapper,control};
-  };
-  const button=(title,fn)=>{const b=node('button',title,'ghost');b.type='button';b.addEventListener('click',fn);return b;};
-  function collect(){return rows.map(row=>({...row.value,name:row.name.value.trim(),vendor:row.vendor.value,model:row.model.value.trim(),enabled:row.enabled.checked,pricingKnown:row.pricing.checked,inputUsdPerMillion:Number(row.input.value),outputUsdPerMillion:Number(row.output.value),...(row.key.value.trim()?{apiKey:row.key.value.trim()}:{})}));}
+  function button(title,fn,label){const b=node('button',title,'ghost');b.type='button';if(label){b.setAttribute('aria-label',label);b.title=label;}b.addEventListener('click',fn);return b;}
+  function markDirty(){dirty=true;hint.textContent='Có thay đổi chưa lưu';hint.className='ai-unsaved';}
+  function collect(){return rows.map(row=>({id:row.value.id,...(row.value.name?{name:row.value.name}:{}),vendor:row.vendor.value,model:row.model.value.trim(),enabled:row.value.enabled!==false,...(row.key.value.trim()?{apiKey:row.key.value.trim()}:{})}));}
   function render(providers){
-    editor.replaceChildren();rows=[];
+    editor.replaceChildren();rows=[];count.textContent=`${providers.length} API · ${providers.filter(p=>p.enabled!==false).length} đang bật`;add.disabled=!config;
+    if(!providers.length){const empty=node('div',null,'ai-empty');empty.append(node('span','＋','ai-empty-icon'),node('h3','Chưa có kết nối AI'),node('p','Thêm API đầu tiên để bắt đầu phân tích mẫu.','muted'));editor.append(empty);return;}
+    const scroll=node('div',null,'ai-table-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label','Bảng danh sách API AI, có thể cuộn ngang');
+    const table=node('table',null,'ai-table'),caption=node('caption','Danh sách kết nối theo thứ tự ưu tiên');caption.className='ai-visually-hidden';table.append(caption);
+    const thead=node('thead'),heading=node('tr');for(const label of ['Ưu tiên','Nhà cung cấp','Tên model','API key','Trạng thái','Thao tác']){const th=node('th',label);th.scope='col';heading.append(th);}thead.append(heading);table.append(thead);const tbody=node('tbody');table.append(tbody);
     providers.forEach((p,index)=>{
-      p={...p,keyConfigured:p.keyConfigured||config?.providers.some(saved=>saved.id===p.id&&saved.vendor===p.vendor&&saved.keyConfigured)};
-      const box=node('fieldset',null,'panel');box.append(node('legend',`${index+1}. ${p.name||'API mới'}`));
-      const grid=node('div',null,'form-grid');
-      const name=input('Tên hiển thị',p.name),model=input('Model',p.model),key=input(p.keyConfigured?'API key (đã lưu)':'API key',p.apiKey||'',{type:'password'}),enabled=input('Bật API',p.enabled,{type:'checkbox'}),pricing=input('Đã xác định đơn giá',p.pricingKnown,{type:'checkbox'}),priceIn=input('USD / 1 triệu token đầu vào',p.inputUsdPerMillion||0,{type:'number',min:0,max:10000,step:'any'}),priceOut=input('USD / 1 triệu token đầu ra',p.outputUsdPerMillion||0,{type:'number',min:0,max:10000,step:'any'});
-      const vendor=node('select'),vendorLabel=node('label','Nhà cung cấp');
-      for(const [value,title] of [['openai','OpenAI'],['gemini','Google Gemini']]){const option=node('option',title);option.value=value;vendor.append(option);}vendor.value=p.vendor||'openai';vendorLabel.append(vendor);
-      model.control.required=name.control.required=true;
-      model.control.placeholder=p.vendor==='gemini'?'Model Gemini hỗ trợ JSON schema':'Model OpenAI hỗ trợ JSON schema';
-      grid.append(name.wrapper,vendorLabel,model.wrapper,key.wrapper,priceIn.wrapper,priceOut.wrapper,enabled.wrapper,pricing.wrapper);box.append(grid);
-      const value={id:p.id,name:p.name,vendor:p.vendor,model:p.model,enabled:p.enabled,pricingKnown:!!p.pricingKnown,inputUsdPerMillion:p.inputUsdPerMillion||0,outputUsdPerMillion:p.outputUsdPerMillion||0};
-      rows.push({value,name:name.control,vendor,model:model.control,key:key.control,enabled:enabled.control,pricing:pricing.control,input:priceIn.control,output:priceOut.control});
-      const controls=node('div',null,'actions');
-      const up=button('Đưa lên',()=>{const list=collect();[list[index-1],list[index]]=[list[index],list[index-1]];render(list);dirty=true;}),down=button('Đưa xuống',()=>{const list=collect();[list[index],list[index+1]]=[list[index+1],list[index]];render(list);dirty=true;});up.disabled=index===0;down.disabled=index===providers.length-1;
-      const test=button('Kiểm tra API đã lưu',()=>busy(test,async()=>{
-        if(dirty)throw Error('Lưu cấu hình trước khi kiểm tra.');
-        const current=generation,r=await api(`/admin/ai/providers/${encodeURIComponent(p.id)}/test`,{method:'POST'});
-        status.textContent='Đã xếp hàng kiểm tra, đang chờ worker…';
+      const tr=node('tr');const cell=()=>{const td=node('td');tr.append(td);return td;};
+      cell().append(node('span',String(index+1).padStart(2,'0'),'ai-order'));
+      const vendorCell=cell(),vendor=node('select');vendor.setAttribute('aria-label',`Nhà cung cấp API ${index+1}`);for(const [value,title] of Object.entries(vendors)){const option=node('option',title);option.value=value;vendor.append(option);}vendor.value=p.vendor||'gemini';vendorCell.append(vendor);
+      const modelCell=cell(),model=node('input');model.value=p.model||'';model.placeholder='Nhập tên model';model.required=true;model.maxLength=100;model.setAttribute('aria-label',`Tên model API ${index+1}`);model.autocomplete='off';modelCell.append(model);
+      const keyCell=cell(),key=node('input');key.type='password';key.value=p.apiKey||'';key.maxLength=2000;key.autocomplete='new-password';key.setAttribute('aria-label',`API key ${index+1}`);const keyNote=node('small',null,'ai-key-note');keyCell.append(key,keyNote);
+      const saved=config?.providers.find(old=>old.id===p.id),configured=()=>saved?.vendor===vendor.value&&saved.keyConfigured;
+      const syncKey=()=>{key.placeholder=configured()?'Để trống để giữ key đã lưu':'Nhập API key';key.required=p.enabled!==false&&!configured();keyNote.textContent=configured()?'Đã lưu an toàn':'Key mới được mã hóa khi lưu';};syncKey();vendor.addEventListener('change',syncKey);
+      const stateCell=cell(),toggle=button(p.enabled===false?'Tạm dừng':'Đang bật',()=>{const list=collect();list[index].enabled=p.enabled===false;render(list);markDirty();},`${p.enabled===false?'Bật':'Tạm dừng'} API ${index+1}`);toggle.className=`ai-badge ${p.enabled===false?'is-paused':'is-enabled'}`;toggle.setAttribute('aria-pressed',String(p.enabled!==false));stateCell.append(toggle);
+      if(saved?.health){const until=Date.parse(saved.health.cooldown_until),waiting=Number.isFinite(until)&&until>Date.now();stateCell.append(node('small',waiting?`Chờ đến ${date(saved.health.cooldown_until)}`:'Đã hết thời gian chờ','ai-health'),node('small',saved.health.error_code,'ai-health'));}
+      const actionCell=cell(),actions=node('div',null,'ai-row-actions');
+      const up=button('↑',()=>move(index,-1),`Đưa API ${index+1} lên`),down=button('↓',()=>move(index,1),`Đưa API ${index+1} xuống`);up.disabled=index===0;down.disabled=index===providers.length-1;
+      const test=button('Kiểm tra',()=>busy(test,async()=>{
+        if(dirty)throw Error('Lưu danh sách trước khi kiểm tra kết nối.');
+        const current=generation,r=await api(`/admin/ai/providers/${encodeURIComponent(p.id)}/test`,{method:'POST'});if(current!==generation)return;
+        status.textContent=`Đang kiểm tra ${vendors[p.vendor]} · ${p.model}…`;
         for(let i=0;i<40&&current===generation;i++){
           await new Promise(resolve=>setTimeout(resolve,2000));if(current!==generation)return;
-          const result=(await api(`/admin/ai/jobs/${r.job.id}`)).job;
-          if(result.state==='success'){status.textContent='Kết nối và phản hồi cấu trúc hợp lệ.';await refreshStats();return;}
-          if(['failed','needs_review'].includes(result.state))throw Error(`Kiểm tra chưa thành công: ${result.errorCode||result.state}`);
+          const result=(await api(`/admin/ai/jobs/${r.job.id}`)).job;if(current!==generation)return;
+          if(result.state==='success'){status.textContent='Kết nối và phản hồi cấu trúc hợp lệ.';return;}
+          if(['failed','needs_review'].includes(result.state)){status.textContent=`Kiểm tra chưa thành công: ${result.errorCode||result.state}`;throw Error(status.textContent);}
         }
-        if(current===generation)status.textContent='Tác vụ vẫn đang chờ. Kiểm tra worker và tải lại trạng thái.';
-      }));test.disabled=!p.keyConfigured||!p.enabled;
-      controls.append(up,down,test,button('Gỡ API',()=>{if(!confirm(`Gỡ ${p.name||'API này'} khỏi danh sách?`))return;const list=collect();list.splice(index,1);render(list);dirty=true;}));box.append(controls);editor.append(box);
+        if(current===generation)status.textContent='Tác vụ vẫn đang chờ. Kiểm tra worker DataDongBo rồi tải lại danh sách.';
+      }),`Kiểm tra API ${index+1}`);test.disabled=!configured()||p.enabled===false;
+      const remove=button('Xoá',()=>{if(!confirm(`Xoá kết nối ${vendors[vendor.value]} · ${model.value||'model chưa nhập'}?`))return;const list=collect();list.splice(index,1);render(list);markDirty();},`Xoá API ${index+1}`);remove.className='ghost ai-delete';actions.append(up,down,test,remove);actionCell.append(actions);
+      rows.push({value:p,vendor,model,key});tbody.append(tr);
     });
+    scroll.append(table);editor.append(scroll,node('p','Đổi thứ tự bằng ↑ ↓ để chọn API được ưu tiên. Trên màn hình nhỏ, cuộn ngang để xem đầy đủ bảng.','ai-table-help'));
   }
-  const limitControls={};
-  function renderLimits(){limits.replaceChildren();for(const [name,label,min,max,step] of [['maxAttempts','Số API thử tối đa / tác vụ',1,3,1],['maxCallsPerDay','Lượt gọi tối đa / ngày (UTC)',1,1000,1],['maxOutputTokens','Token đầu ra tối đa / lượt',256,8000,1],['dailyBudgetUsd','Giới hạn chi phí ước tính USD / ngày (0 = không đặt)',0,1000,'any']]){const f=input(label,config[name],{type:'number',name,min,max,step});f.control.required=true;limitControls[name]=f.control;limits.append(f.wrapper);}}
-  function stats(configuration){statistics.replaceChildren(node('h2','Sử dụng trong ngày (UTC)'),node('p','Chi phí là ước tính từ đơn giá bạn cấu hình. Lượt lỗi hoặc chưa rõ kết quả giữ khoản dự trù; không thay thế hoá đơn nhà cung cấp.','muted'));for(const p of configuration.providers){const s=p.stats||{};statistics.append(node('p',`${p.name}: ${s.calls||0} lượt · ${s.successes||0} thành công · ${s.uncertain||0} chưa rõ kết quả · ${s.input_tokens||0}/${s.output_tokens||0} token vào/ra · ${Number(s.unpriced_calls)>0?'Chi phí chưa đầy đủ: có lượt chưa cấu hình đơn giá':'~'+Number(s.estimated_usd||0).toFixed(6)+' USD'}${p.health?` · ${p.health.error_code}, chờ đến ${date(p.health.cooldown_until)}`:''}`));}}
-  async function refreshStats(){const r=await api('/admin/ai');stats(r.configuration);}
-  async function open(){const current=++generation;save.disabled=true;status.textContent='Đang tải cấu hình AI…';try{const r=await api('/admin/ai');if(current!==generation)return;config=r.configuration;dirty=false;renderLimits();render(config.providers);stats(config);save.disabled=false;status.textContent='Đã tải cấu hình. Key đã lưu luôn được giữ kín.';const audit=await api('/admin/ai/history');if(current!==generation)return;history.replaceChildren(node('h2','Lịch sử thay đổi'));for(const item of audit.items)history.append(node('p',`Phiên bản ${item.revision} · ${item.actor} · ${date(item.created_at)}`));}catch(e){status.textContent='Chưa tải được cấu hình AI.';notice(e.message,true);}}
-  form.addEventListener('input',()=>{dirty=true;});form.addEventListener('change',()=>{dirty=true;});
-  form.addEventListener('submit',event=>{event.preventDefault();busy(save,async()=>{if(!config)throw Error('Tải cấu hình trước khi lưu.');const settings=Object.fromEntries(Object.entries(limitControls).map(([key,control])=>[key,Number(control.value)]));await api('/admin/ai',{method:'PUT',body:JSON.stringify({revision:config.revision,providers:collect(),...settings})});for(const row of rows)row.key.value='';notice('Đã lưu danh sách API AI.');await open();});});
-  add.addEventListener('click',()=>{const list=collect();list.push({id:crypto.randomUUID(),name:'',vendor:'openai',model:'',enabled:false});render(list);dirty=true;});
-  reload.addEventListener('click',()=>{if(!dirty||confirm('Bỏ thay đổi chưa lưu và tải lại?'))open();});
-  save.disabled=true;
-  return {open,clear(){generation++;config=null;rows=[];dirty=false;editor.replaceChildren();limits.replaceChildren();statistics.replaceChildren();history.replaceChildren();save.disabled=true;}};
+  function move(index,delta){const list=collect();[list[index],list[index+delta]]=[list[index+delta],list[index]];render(list);markDirty();editor.querySelector(`button[aria-label="Đưa API ${index+delta+1} ${delta>0?'lên':'xuống'}"]`)?.focus();}
+  async function open(){
+    const current=++generation;save.disabled=add.disabled=true;status.textContent='Đang tải danh sách API…';
+    try{
+      const r=await api('/admin/ai');if(current!==generation)return;config=r.configuration;dirty=false;render(config.providers);save.disabled=reload.disabled=false;hint.textContent='Các thay đổi chỉ áp dụng sau khi lưu.';hint.className='muted';status.textContent='Đã tải danh sách. API key đã lưu luôn được giữ kín.';
+      try{const audit=await api('/admin/ai/history');if(current!==generation)return;historyRows.replaceChildren();for(const item of audit.items)historyRows.append(node('p',`Phiên bản ${item.revision} · ${item.actor} · ${date(item.created_at)}`));if(!audit.items.length)historyRows.append(node('p','Chưa có thay đổi được ghi nhận.','muted'));}catch{if(current===generation)historyRows.replaceChildren(node('p','Chưa tải được lịch sử. Bạn vẫn có thể quản lý danh sách API.','muted'));}
+    }catch(e){if(current===generation){reload.disabled=false;status.textContent='Chưa tải được danh sách. Chọn Tải lại để thử lại.';notice(e.message,true);}}
+  }
+  form.addEventListener('input',markDirty);form.addEventListener('change',markDirty);
+  form.addEventListener('submit',event=>{event.preventDefault();busy(save,async()=>{
+    if(!config)throw Error('Tải danh sách trước khi lưu.');
+    const current=generation,submittedRows=rows.slice(),body=JSON.stringify({revision:config.revision,providers:collect()});
+    const disabled=[...form.querySelectorAll('input,select,button'),add].map(control=>({control,wasDisabled:control.disabled}));
+    for(const {control} of disabled)control.disabled=true;
+    try{
+      await api('/admin/ai',{method:'PUT',body});
+      if(current!==generation)return;
+      for(const row of submittedRows)row.key.value='';
+      notice('Đã lưu danh sách API AI.');await open();
+    }finally{if(current===generation)for(const {control,wasDisabled} of disabled)if(control.isConnected)control.disabled=wasDisabled;}
+  });});
+  save.disabled=add.disabled=true;
+  return {open:()=>config&&dirty?undefined:open(),clear(){generation++;config=null;rows=[];dirty=false;editor.replaceChildren();historyRows.replaceChildren();count.textContent='';status.textContent='Chưa tải danh sách API.';hint.textContent='Các thay đổi chỉ áp dụng sau khi lưu.';save.disabled=add.disabled=true;}};
 }

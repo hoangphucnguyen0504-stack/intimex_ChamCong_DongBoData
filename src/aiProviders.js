@@ -47,12 +47,12 @@ async function readJson(response){
   for await(const chunk of response.body||[]){length+=chunk.length;if(length>1024*1024)throw new Fault(502,'AI_RESPONSE_TOO_LARGE');chunks.push(Buffer.from(chunk));}
   try{return JSON.parse(Buffer.concat(chunks).toString());}catch{throw new Fault(502,'AI_INVALID_JSON');}
 }
-export async function callProvider(provider,payload,{maxOutputTokens=4000,fetchImpl=globalThis.fetch,timeoutMs=30000}={}){
+export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,timeoutMs=30000}={}){
   const text=JSON.stringify(payload),responseSchema=schemaFor(payload,provider);
   const openai=provider.vendor==='openai';
   const url=openai?'https://api.openai.com/v1/chat/completions':`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`;
-  const body=openai?{model:provider.model,store:false,messages:[{role:'system',content:outputInstruction},{role:'user',content:text}],max_completion_tokens:maxOutputTokens,response_format:{type:'json_schema',json_schema:{name:'inspection_mapping',strict:true,schema:responseSchema}}}
-    :{systemInstruction:{parts:[{text:outputInstruction}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{maxOutputTokens,responseMimeType:'application/json',responseJsonSchema:responseSchema}};
+  const body=openai?{model:provider.model,store:false,messages:[{role:'system',content:outputInstruction},{role:'user',content:text}],response_format:{type:'json_schema',json_schema:{name:'inspection_mapping',strict:true,schema:responseSchema}}}
+    :{systemInstruction:{parts:[{text:outputInstruction}]},contents:[{role:'user',parts:[{text}]}],generationConfig:{responseMimeType:'application/json',responseJsonSchema:responseSchema}};
   let response;
   try{response=await fetchImpl(url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'Content-Type':'application/json',...(openai?{Authorization:`Bearer ${provider.apiKey}`}:{'x-goog-api-key':provider.apiKey})},body:JSON.stringify(body)});}
   catch{throw Object.assign(new Fault(503,'AI_TIMEOUT','Chưa xác định được kết quả gọi AI; cần kiểm tra trước khi thử lại.'),{uncertain:true});}
@@ -77,13 +77,13 @@ export async function callProvider(provider,payload,{maxOutputTokens=4000,fetchI
   }catch(error){throw Object.assign(error,accounting);}
 }
 
-export async function failover(providers,payload,{maxAttempts=3,maxOutputTokens=4000,invoke=callProvider,before=async()=>{},after=async()=>{},now=Date.now}={}){
+export async function failover(providers,payload,{invoke=callProvider,before=async()=>{},after=async()=>{},now=Date.now}={}){
   let count=0,last='AI_NO_PROVIDER';
   for(const provider of providers){
-    if(!provider.enabled||provider.cooldownUntil>now()||count>=maxAttempts)continue;
+    if(!provider.enabled||provider.cooldownUntil>now())continue;
     await before(provider);count++;
     let result;
-    try{result=await invoke(provider,payload,{maxOutputTokens});}
+    try{result=await invoke(provider,payload);}
     catch(error){
       // No provider body/message is persisted; only bounded internal codes.
       last=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_SERVICE';
