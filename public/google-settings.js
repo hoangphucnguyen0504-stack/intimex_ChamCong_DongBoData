@@ -55,7 +55,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
       const updateTitle=()=>{title.textContent=(index+1)+'. '+(credential.label||'Tài khoản Drive mới');code.textContent=(credential.enabled===false?'Đã tắt':'Đang bật')+' · '+(credential.id||'Chưa lưu')+' · Bấm để chỉnh sửa';};
       updateTitle();head.append(title,code);card.addEventListener('toggle',()=>credential.editing=card.open);
       const change=key=>value=>{credential[key]=value;dirty=true;};
-      if(credential.clientId)fields.append(input('Tên tài khoản / cấu hình',credential.label,change('label'),{maxLength:100}),
+      if(credential.clientId !== undefined)fields.append(input('Tên tài khoản / cấu hình',credential.label,change('label'),{maxLength:100}),
         input('OAuth Client ID',credential.clientId,change('clientId'),{maxLength:512}),
         input('OAuth Client Secret',credential.clientSecret,change('clientSecret'),{type:'password',required:!credential.clientSecretConfigured,placeholder:credential.clientSecretConfigured?'Đã lưu — để trống để giữ nguyên':''}),
         input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':''}),
@@ -120,7 +120,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
   });
   $('#add-drive-credential').addEventListener('click',()=>{
     if(!driveLoaded||credentials.length>=100)return;
-    credentials.push({label:'Token dự phòng '+(credentials.length+1),refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
+    credentials.push({label:'Tài khoản Drive '+(credentials.length+1),clientId:'',folderId:'',refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
   });
   $('#reload-drive-credentials').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive()));
   $('#refresh-drive-issuance').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive(false)));

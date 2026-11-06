@@ -19,6 +19,7 @@ import {createRequestLogger} from './requestLogger.js';
 import {upsertImage,linkImage} from './images.js';
 import * as businessSchemas from './businessSchemas.js';
 import {mountDriveCredentials} from './driveCredentials.js';
+import {mountAI} from './ai.js';
 import {listDestinationStatus,destinationSheets} from './sheetDestinations.js';
 import {
   verifyAdminPassword,
@@ -146,6 +147,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.use('/v1',auth.integration);
   app.use('/v1',accessActivity.track('api'));
   mountDriveCredentials(app,pool,config);
+  mountAI(app,pool,config);
   app.post('/v1/cham-cong/images/upsert',async(req,res)=>res.json(await upsertImage(pool,req.body)));
   app.post('/v1/cham-cong/images/link',async(req,res)=>res.json(await linkImage(pool,req.body)));
   app.get('/v1/cham-cong/ping',(_req,res)=>res.json({ok:true}));

@@ -1,7 +1,8 @@
 import {mountGoogleSettings} from './google-settings.js';
 import {mountRetention} from './retention.js';
+import {mountAISettings} from './ai-settings.js';
 const $=selector=>document.querySelector(selector);
-let session=false,refreshing=false,settings,lastStatus,googleSettings,retentionManager;
+let session=false,refreshing=false,settings,lastStatus,googleSettings,retentionManager,aiSettings;
 const labels={pending:'Chờ xử lý',retry:'Đang chờ thử lại',running:'Đang chạy',success:'Thành công',failed:'Lỗi',needs_review:'Cần kiểm tra',interrupted:'Bị gián đoạn',ready:'Sẵn sàng',new:'Chưa khởi tạo',importing:'Đang nhập'};
 const date=v=>v?new Intl.DateTimeFormat('vi-VN',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Ho_Chi_Minh'}).format(new Date(v)):'Chưa có';
 function notice(message,error=false){const n=$('#notice');n.textContent=message;n.className=error?'error':'';n.hidden=false;clearTimeout(notice.timer);notice.timer=setTimeout(()=>n.hidden=true,error?12000:5000);}
@@ -9,13 +10,14 @@ async function api(path,options={}) {
   const r=await fetch(path,{...options,headers:{...(options.body?{'Content-Type':'application/json'}:{}),...options.headers}});
   const data=await r.json();if(!r.ok){if(r.status===401)showLogin();throw Error(data.message||data.code||'Không thể kết nối.');}return data;
 }
-function showLogin(){googleSettings?.clear();session=false;$('#application').hidden=true;$('#login-panel').hidden=false;}
+function showLogin(){googleSettings?.clear();aiSettings?.clear();session=false;$('#application').hidden=true;$('#login-panel').hidden=false;}
 function badge(value){const e=document.createElement('span');e.className='badge'+(['failed','needs_review','interrupted'].includes(value)?' error':'');e.textContent=labels[value]||value;return e;}
 function table(target,rows,cells){const body=$(target);body.replaceChildren();if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=8;td.textContent='Không có dữ liệu';tr.append(td);body.append(tr);return;}for(const row of rows){const tr=document.createElement('tr');for(const content of cells(row)){const td=document.createElement('td');if(content instanceof Node)td.append(content);else td.textContent=String(content??'—');tr.append(td);}body.append(tr);}}
 function button(text,action){const b=document.createElement('button');b.type='button';b.className='ghost';b.textContent=text;b.addEventListener('click',()=>busy(b,action));return b;}
 async function busy(b,action){if(b.disabled)return;b.disabled=true;try{await action();}catch(e){notice(e.message,true);}finally{b.disabled=false;}}
 googleSettings=mountGoogleSettings({api,notice,busy,date,table,button});
 retentionManager=mountRetention({api,notice,busy,date,table,button});
+aiSettings=mountAISettings({api,notice,busy,date});
 async function refresh(initial=false) {
   if(!session||refreshing||document.hidden)return;refreshing=true;if(initial)$('#loading').hidden=false;
   try {
@@ -105,7 +107,7 @@ $('#test-sheets').addEventListener('click',()=>busy($('#test-sheets'),async()=>{
 $('#entity-form').addEventListener('submit',e=>{e.preventDefault();busy(e.submitter,async()=>{const f=e.target;await api('/admin/entities',{method:'POST',body:JSON.stringify({name:f.elements.name.value.trim(),tabName:f.elements.tabName.value.trim(),headers:f.elements.headers.value.split(/[\r\n,]+/).map(s=>s.trim()).filter(Boolean),retentionDays:Number(f.elements.retentionDays.value)})});notice('Đã lưu tài nguyên. Chạy nhập lần đầu để bắt đầu sử dụng.');await refresh();});});
 $('#read-headers').addEventListener('click',()=>busy($('#read-headers'),async()=>{const f=$('#entity-form'),tab=f.elements.tabName.value.trim();if(!tab)throw Error('Nhập tên tab trước.');const r=await api('/admin/sheets/headers?tab='+encodeURIComponent(tab));if(!r.headers.length)throw Error('Tab chưa có tiêu đề. Hãy nhập danh sách cột thủ công.');f.elements.headers.value=r.headers.join('\n');if(!f.elements.name.value)f.elements.name.value=tab;notice('Đã lấy cột từ tab. Kiểm tra lại trước khi lưu.');}));
 $('#sync-now').addEventListener('click',()=>busy($('#sync-now'),async()=>{const r=await api('/admin/jobs',{method:'POST',body:JSON.stringify({kind:'sync'})});notice(r.existing?'Đã có tác vụ đang chờ/chạy.':'Đã lưu yêu cầu đồng bộ.');await refresh();}));
-const titles={overview:'Tổng quan đồng bộ',settings:'Cấu hình đồng bộ',entities:'Tài nguyên dữ liệu',connection:'Kết nối chấm công',kinhdoanh:'Kết nối Kinh Doanh',retention:'Dọn dữ liệu MySQL'};
-for(const b of document.querySelectorAll('[data-tab]'))b.addEventListener('click',()=>{for(const p of document.querySelectorAll('[data-page]'))p.hidden=p.dataset.page!==b.dataset.tab;for(const n of document.querySelectorAll('[data-tab]'))n.classList.toggle('active',n===b);$('#page-title').textContent=titles[b.dataset.tab];if(b.dataset.tab==='kinhdoanh')refreshKinhDoanh();if(b.dataset.tab==='settings')googleSettings.open();if(b.dataset.tab==='retention')retentionManager.open();});
+const titles={overview:'Tổng quan đồng bộ',settings:'Cấu hình đồng bộ',entities:'Tài nguyên dữ liệu',connection:'Kết nối chấm công',kinhdoanh:'Kết nối Kinh Doanh',retention:'Dọn dữ liệu MySQL',ai:'Danh sách API AI'};
+for(const b of document.querySelectorAll('[data-tab]'))b.addEventListener('click',()=>{for(const p of document.querySelectorAll('[data-page]'))p.hidden=p.dataset.page!==b.dataset.tab;for(const n of document.querySelectorAll('[data-tab]'))n.classList.toggle('active',n===b);$('#page-title').textContent=titles[b.dataset.tab];if(b.dataset.tab==='kinhdoanh')refreshKinhDoanh();if(b.dataset.tab==='settings')googleSettings.open();if(b.dataset.tab==='retention')retentionManager.open();if(b.dataset.tab==='ai')aiSettings.open();});
 setInterval(()=>refresh(),10000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 initialize().catch(()=>showLogin());

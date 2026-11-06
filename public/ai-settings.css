@@ -1,0 +1,5 @@
+[data-page="ai"] select { width:100%;min-width:0;min-height:46px;padding:10px 12px;font:inherit;color:inherit;background:#fff;border:1px solid var(--border,#d5dfdb);border-radius:7px; }
+[data-page="ai"] .ai-toggle { display:flex;align-items:center;gap:10px;min-height:44px; }
+[data-page="ai"] .ai-toggle input { width:18px;height:18px;flex:0 0 18px;margin:0; }
+[data-page="ai"] select:focus-visible,[data-page="ai"] input:focus-visible { outline:3px solid #8fd4b5;outline-offset:2px; }
+[data-page="ai"] fieldset { margin-bottom:20px; }

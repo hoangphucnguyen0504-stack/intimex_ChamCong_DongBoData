@@ -14,7 +14,8 @@ export async function migrate(pool) {
     const [[lock]]=await conn.query("SELECT GET_LOCK('datadongbo-migration',30) AS acquired");
     if(!Number(lock.acquired)) throw Error('MIGRATION_BUSY');
     const credentials=await readFile(new URL('../sql/drive-credentials.sql',import.meta.url),'utf8');
-    for(const sql of (source+';'+credentials).split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const ai=await readFile(new URL('../sql/ai.sql',import.meta.url),'utf8');
+    for(const sql of (source+';'+credentials+';'+ai).split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
     const retentionSql = await readFile(new URL('../sql/retention.sql', import.meta.url),'utf8');
     for(const sql of retentionSql.split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
     const [previewCols] = await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='retention_previews' AND column_name='entities'");
