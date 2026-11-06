@@ -99,7 +99,8 @@ export async function processNext(pool,key,{invoke}={}){
         after:async(provider,result)=>{
           const input=result.usage?.input||0,output=result.usage?.output||0;
           const cost=provider.pricingKnown?(input*provider.inputUsdPerMillion+output*provider.outputUsdPerMillion)/1e6:0;
-          await pool.query('UPDATE ai_calls SET state=?,input_tokens=?,output_tokens=?,estimated_usd=IF(?=\'success\',?,estimated_usd),error_code=? WHERE id=?',[result.state,input,output,result.usageKnown===false?'usage_unknown':result.state,cost,result.usageKnown===false?'AI_USAGE_UNKNOWN':result.code||null,activeCall.id]);
+          const accounted=result.usageKnown===true||result.state==='success'&&result.usageKnown!==false;
+          await pool.query('UPDATE ai_calls SET state=?,input_tokens=?,output_tokens=?,estimated_usd=IF(?=\'success\',?,estimated_usd),error_code=? WHERE id=?',[result.state,input,output,accounted?'success':'usage_unknown',cost,result.state==='success'&&result.usageKnown===false?'AI_USAGE_UNKNOWN':result.code||null,activeCall.id]);
           if(result.state!=='success')await pool.query('INSERT INTO ai_provider_health(provider_id,cooldown_until,error_code) VALUES(?,UTC_TIMESTAMP(3)+INTERVAL ? SECOND,?) ON DUPLICATE KEY UPDATE cooldown_until=VALUES(cooldown_until),error_code=VALUES(error_code)',[provider.id,result.code==='AI_AUTH'?3600:Math.min(3600,result.retryAfter||60),result.code]);
           else await pool.query('DELETE FROM ai_provider_health WHERE provider_id=?',[provider.id]);
         }});

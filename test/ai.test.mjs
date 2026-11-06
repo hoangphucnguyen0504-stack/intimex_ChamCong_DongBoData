@@ -26,6 +26,43 @@ test('AI output cannot invent positions, formulas, sources or duplicate target w
   assert.throws(()=>validateOutput({fields:[field,{...field,key:'other'}]},payload),e=>e.code==='AI_INVALID_MAPPING');
   assert.throws(()=>validateOutput({fields:[field]},{...payload,positions:[{...payload.positions[0],formula:true}]}));
 });
+test('provider schema constrains confidence and keys and invalid Gemini output preserves usage with a safe diagnostic',async()=>{
+  let request;
+  const invoke=value=>callProvider({...provider,vendor:'gemini'},payload,{fetchImpl:async(_url,options)=>{
+    request=JSON.parse(options.body);
+    return Response.json({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(value)}]}}],usageMetadata:{promptTokenCount:180,candidatesTokenCount:381,thoughtsTokenCount:19}});
+  }});
+  for(const [patch,code] of [[{key:'business.netKg'},'AI_INVALID_OUTPUT_KEY'],[{confidence:93},'AI_INVALID_OUTPUT_CONFIDENCE'],[{reason:null},'AI_INVALID_OUTPUT_REASON']]){
+    await assert.rejects(()=>invoke({fields:[{...field,...patch}]}),error=>{
+      assert.equal(error.code,code);assert.equal(error.usageKnown,true);assert.deepEqual(error.usage,{input:180,output:400});
+      assert(!JSON.stringify(error).includes('business.netKg'));return true;
+    });
+  }
+  const properties=request.generationConfig.responseJsonSchema.properties.fields.items.properties;
+  assert.equal(properties.key.pattern,'^[A-Za-z_][A-Za-z0-9_]{0,49}$');
+  assert.equal(properties.confidence.minimum,0);assert.equal(properties.confidence.maximum,1);
+  assert.deepEqual(properties.source.enum,['business.netKg','manual']);
+  assert.equal(request.generationConfig.responseJsonSchema.properties.fields.maxItems,150);
+});
+test('truncated and blocked responses have specific codes and invalid output fails over once with its token usage',async()=>{
+  for(const [finishReason,code] of [['MAX_TOKENS','AI_OUTPUT_TRUNCATED'],['SAFETY','AI_BLOCKED']]){
+    await assert.rejects(()=>callProvider({...provider,vendor:'gemini'},payload,{fetchImpl:async()=>Response.json({candidates:[{finishReason,content:{parts:[{text:'partial'}]}}],usageMetadata:{promptTokenCount:10,candidatesTokenCount:20}})}),error=>error.code===code&&error.usage.input===10);
+  }
+  const events=[],calls=[];
+  const result=await failover([provider,{...provider,id:'backup'}],payload,{invoke:async p=>{
+    calls.push(p.id);if(p.id==='first')throw Object.assign(new Fault(502,'AI_INVALID_OUTPUT_CONFIDENCE'),{usageKnown:true,usage:{input:180,output:400}});
+    return {result:{fields:[field]},usageKnown:true,usage:{input:50,output:30}};
+  },after:async(_p,event)=>events.push(event)});
+  assert.deepEqual(calls,['first','backup']);assert.equal(result.providerId,'backup');assert.deepEqual(events[0].usage,{input:180,output:400});
+});
+test('fine-tuned OpenAI models retain compatible provider schemas and strict local validation',async()=>{
+  await assert.rejects(()=>callProvider({...provider,model:'ft:test-model:organization:suffix'},payload,{fetchImpl:async(_url,options)=>{
+    const schema=JSON.parse(options.body).response_format.json_schema.schema;
+    assert.equal(schema.properties.fields.maxItems,undefined);
+    for(const property of Object.values(schema.properties.fields.items.properties))for(const keyword of ['pattern','minLength','maxLength','minimum','maximum'])assert.equal(property[keyword],undefined);
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({fields:[{...field,confidence:93}]})}}],usage:{prompt_tokens:10,completion_tokens:20}});
+  }}),error=>error.code==='AI_INVALID_OUTPUT_CONFIDENCE');
+});
 test('rate limits fail over, cooldown and maximum attempts are respected; uncertain calls stop',async()=>{
   const calls=[],events=[];
   const result=await failover([{...provider,cooldownUntil:100},provider,{...provider,id:'second'}],payload,{now:()=>0,invoke:async p=>{calls.push(p.id);if(p.id==='first')throw new Fault(429,'AI_RATE_LIMIT');return {result:{fields:[field]},usage:{input:1,output:1}};},after:async(p,event)=>events.push([p.id,event.state])});
@@ -99,4 +136,15 @@ test('daily call budgets prevent paid calls; retry of ambiguous jobs requires ex
   await retryJob(db,first.job.id,'company-a');
   await processNext(db,key,{invoke:async()=>{calls++;}});assert.equal(calls,1);
   assert.equal((await getJob(db,key,first.job.id,'company-a')).job.errorCode,'AI_BUDGET_LIMIT');
+});
+test('worker records billed tokens for rejected output and retains reserves when usage is unknown',async()=>{
+  for(const usageKnown of [true,false]){
+    const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+    const job=await submit(db,key,{requestId:'invalid-output',scope:'test-company',fingerprint:'b'.repeat(64),payload});
+    await processNext(db,key,{invoke:async()=>{throw Object.assign(new Fault(502,'AI_INVALID_OUTPUT_CONFIDENCE'),{usageKnown,usage:{input:180,output:400}});}});
+    const call=db.state.calls[0];assert.equal(call.state,'failed');assert.equal(call.input,180);assert.equal(call.output,400);
+    assert.equal(call.error,'AI_INVALID_OUTPUT_CONFIDENCE');
+    if(usageKnown)assert.equal(call.cost,(180+400*2)/1e6);else assert(call.cost>(180+400*2)/1e6);
+    assert.equal((await getJob(db,key,job.job.id,'test-company')).job.errorCode,'AI_INVALID_OUTPUT_CONFIDENCE');
+  }
 });
