@@ -1,3 +1,13 @@
+CREATE TABLE IF NOT EXISTS ai_documents (
+ id CHAR(64) PRIMARY KEY,
+ scope VARCHAR(200) NOT NULL,
+ file_hash CHAR(64) NOT NULL,
+ format VARCHAR(8) NOT NULL,
+ encrypted_original LONGTEXT NOT NULL,
+ encrypted_pdf LONGTEXT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ INDEX ai_document_date(created_at)
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS ai_configuration (
  id TINYINT PRIMARY KEY,
  revision BIGINT NOT NULL DEFAULT 0,

@@ -4,6 +4,7 @@ import {encrypt,decrypt,digest,stable,Fault} from './core.js';
 import {transaction} from './db.js';
 import {payloadSchema,failover} from './aiProviders.js';
 import {saveDiagnostic,safeError,mountDiagnostics} from './aiDiagnostics.js';
+import {saveDocument,assertDocument,documentForReview} from './aiDocuments.js';
 
 const providerSchema=z.object({id:z.string().regex(/^[\w-]{1,100}$/),name:z.string().trim().min(1).max(100).optional(),vendor:z.enum(['openai','gemini']),model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/),enabled:z.boolean().default(true),apiKey:z.string().trim().min(8).max(2000).optional()}).strip();
 // Old pricing/limit fields are intentionally discarded when old clients save configuration.
@@ -43,6 +44,7 @@ export async function saveConfiguration(pool,key,input,actor){
 const submitSchema=z.object({requestId:z.string().min(8).max(150).regex(/^[\w:.-]+$/),scope:z.string().min(1).max(200),fingerprint:z.string().regex(/^[a-f0-9]{64}$/),payload:payloadSchema}).strict();
 export async function submit(pool,key,input,{testProviderId}={}){
   const d=submitSchema.parse(input),encoded=JSON.stringify(stable(d.payload));
+  if(d.payload.mode==='recognition-review-v2')await assertDocument(pool,d.payload,d.scope);
   if(encoded.length>60000)throw new Fault(413,'AI_INPUT_LIMIT','Mẫu vượt giới hạn phân tích AI; thu gọn vùng dữ liệu hoặc cấu hình thủ công.');
   const id=digest(d.scope+':'+d.requestId),payloadHash=digest(encoded);
   const [[existing]]=await pool.query('SELECT id,scope,fingerprint,payload_hash,state,error_code,provider_id FROM ai_jobs WHERE id=?',[id]);
@@ -82,13 +84,15 @@ export async function processNext(pool,key,{invoke}={}){
     await lock.query("UPDATE ai_jobs SET state='needs_review',error_code='AI_INTERRUPTED',finished_at=UTC_TIMESTAMP(3) WHERE state='running' AND started_at<UTC_TIMESTAMP(3)-INTERVAL 5 MINUTE");
     await lock.query("UPDATE ai_calls c JOIN ai_jobs j ON j.id=c.job_id SET c.state='unknown',c.error_code='AI_INTERRUPTED' WHERE c.state='running' AND j.state='needs_review'");
     await lock.query('UPDATE ai_jobs SET encrypted_payload=NULL,encrypted_result=NULL WHERE created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND state NOT IN (\'queued\',\'running\')');
+    await lock.query("DELETE d FROM ai_documents d WHERE d.created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND NOT EXISTS (SELECT 1 FROM ai_jobs j WHERE j.scope=d.scope AND j.state IN ('queued','running'))");
     const [[job]]=await lock.query("SELECT * FROM ai_jobs WHERE state='queued' ORDER BY created_at LIMIT 1");
     if(!job)return;
     const [claimed]=await lock.query("UPDATE ai_jobs SET state='running',started_at=UTC_TIMESTAMP(3) WHERE id=? AND state='queued'",[job.id]);
     if(claimed.affectedRows!==1)return {id:job.id,skipped:true};
     let activeCall;
     try{
-      const cfg=await configuration(pool,key),{payload,testProviderId}=decrypt(job.encrypted_payload,key);
+      const cfg=await configuration(pool,key),stored=decrypt(job.encrypted_payload,key),testProviderId=stored.testProviderId;
+      const payload=stored.payload.mode==='recognition-review-v2'?{...stored.payload,document:await documentForReview(pool,key,stored.payload,job.scope)}:stored.payload;
       const [health]=await pool.query('SELECT * FROM ai_provider_health');
       const providers=cfg.providers.filter(p=>p.apiKey&&(!testProviderId||p.id===testProviderId)).map(p=>({...p,cooldownUntil:Date.parse(health.find(h=>h.provider_id===p.id)?.cooldown_until||'')||0}));
       const outcome=await failover(providers,payload,{invoke,
@@ -98,7 +102,7 @@ export async function processNext(pool,key,{invoke}={}){
         },
         after:async(provider,result)=>{
           await pool.query('UPDATE ai_calls SET state=?,error_code=? WHERE id=?',[result.state,result.code||null,activeCall.id]);
-          if(result.state!=='success'&&payload.mode==='recognition-review')await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',fileHash:payload.fileHash,jobId:job.id,providerId:provider.id,...safeError({code:result.code,issues:result.issues})});
+          if(result.state!=='success'&&payload.mode?.startsWith('recognition-review'))await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',fileHash:payload.fileHash,jobId:job.id,providerId:provider.id,...safeError({code:result.code,issues:result.issues})});
           if(result.state!=='success')await pool.query('INSERT INTO ai_provider_health(provider_id,cooldown_until,error_code) VALUES(?,UTC_TIMESTAMP(3)+INTERVAL ? SECOND,?) ON DUPLICATE KEY UPDATE cooldown_until=VALUES(cooldown_until),error_code=VALUES(error_code)',[provider.id,result.code==='AI_AUTH'?3600:Math.min(3600,result.retryAfter||60),result.code]);
           else await pool.query('DELETE FROM ai_provider_health WHERE provider_id=?',[provider.id]);
         }});
@@ -114,6 +118,10 @@ export async function processNext(pool,key,{invoke}={}){
 export function mountAI(app,pool,config){
   const key=config.CONFIG_ENCRYPTION_KEY;
   mountDiagnostics(app,pool,key);
+  app.post('/v1/ai/documents',async(req,res)=>{
+    try{res.status(201).json(await saveDocument(pool,key,req.body));}
+    catch(error){await saveDiagnostic(pool,key,{scope:'inspection:file-processing',stage:'scan',...safeError(error)});throw error;}
+  });
   // Mounted after the existing /admin and /v1 authentication middleware.
   app.get('/admin/ai',async(_req,res)=>res.json({ok:true,configuration:await publicConfiguration(pool,key)}));
   app.put('/admin/ai',async(req,res)=>res.json(await saveConfiguration(pool,key,req.body,config.ADMIN_USERNAME)));

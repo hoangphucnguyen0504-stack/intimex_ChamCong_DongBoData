@@ -42,7 +42,9 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.get('/health/ready',async(_req,res)=>{try {await pool.query('SELECT 1');res.json({ok:true});}catch {res.status(503).json({ok:false});}});
   const normalJson=express.json({limit:'2mb',strict:true}),integrationJson=express.json({limit:'8mb',strict:true});
   const imageJson=express.json({limit:'16kb',strict:true});
+  const aiDocumentJson=express.json({limit:'15mb',strict:true});
   app.use((req,res,next)=>{
+    if(req.path==='/v1/ai/documents')return auth.integration(req,res,()=>aiDocumentJson(req,res,next));
     if(['/v1/cham-cong/images/upsert','/v1/cham-cong/images/link'].includes(req.path))return auth.integration(req,res,()=>imageJson(req,res,next));
     return req.path==='/v1/cham-cong/write'
       ? auth.integration(req,res,()=>integrationJson(req,res,next)) : normalJson(req,res,next);
