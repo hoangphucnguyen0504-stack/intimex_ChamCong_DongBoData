@@ -1,8 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {encrypt,decrypt,Fault} from '../src/core.js';
+import {encrypt,decrypt,digest,Fault} from '../src/core.js';
 import {callProvider,failover,validateOutput,payloadSchema} from '../src/aiProviders.js';
-import {configurationSchema,saveConfiguration,publicConfiguration,submit,getJob,retryJob,cancelQueuedJob,processNext} from '../src/ai.js';
+import {configurationSchema,saveConfiguration,publicConfiguration,submit,getJob,retryJob,retryAdminJob,cancelQueuedJob,processNext} from '../src/ai.js';
 const key='ab'.repeat(32);
 const payload=payloadSchema.parse({format:'docx',positions:[{id:'word/document.xml:p0',text:'{{mass}}',label:'Khối lượng',writable:true}],dictionary:[{key:'business.netKg',label:'Khối lượng',type:'number'}]});
 const field={key:'mass',position:'word/document.xml:p0',source:'business.netKg',label:'Khối lượng',type:'number',rule:'sum',confidence:.9,reason:'Đối chiếu nhãn và vị trí.'};
@@ -97,16 +97,18 @@ function memoryPool(){
     if(sql.startsWith('UPDATE ai_calls c JOIN'))return [{affectedRows:0}];
     if(sql.startsWith('UPDATE ai_calls')){const c=state.calls.find(c=>c.id===p[2]);Object.assign(c,{state:p[0],error:p[1]});return [{affectedRows:1}];}
     if(sql.startsWith('INSERT IGNORE INTO ai_jobs')){if(!state.jobs.has(p[0]))state.jobs.set(p[0],{id:p[0],scope:p[1],fingerprint:p[2],payload_hash:p[3],encrypted_payload:p[4],state:'queued'});return [{affectedRows:1}];}
-    if(sql.startsWith('SELECT id,scope')||sql.startsWith('SELECT * FROM ai_jobs WHERE id=')){const job=state.jobs.get(p[0]);return [[...(job&&(!p[1]||job.scope===p[1])?[job]:[])]];}
+    if(sql.startsWith('SELECT id,scope')||sql.startsWith('SELECT * FROM ai_jobs WHERE id=')){const job=state.jobs.get(p[0]);return [[...(job&&(!p[1]||job.scope===p[1])?[structuredClone(job)]:[])]];}
     if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'"))return [[...([...state.jobs.values()].filter(j=>j.state==='queued').slice(0,1))]];
     if(sql.startsWith("UPDATE ai_jobs SET state='running'")){const job=state.jobs.get(p[0]);if(job.state!=='queued')return [{affectedRows:0}];job.state='running';return [{affectedRows:1}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='success'")){Object.assign(state.jobs.get(p[2]),{state:'success',encrypted_result:p[0],provider_id:p[1]});return [{affectedRows:1}];}
-    if(sql.startsWith('UPDATE ai_jobs SET state=?')){Object.assign(state.jobs.get(p[2]),{state:p[0],error_code:p[1]});return [{affectedRows:1}];}
+    if(sql.startsWith('UPDATE ai_jobs SET state=?')){Object.assign(state.jobs.get(p[3]),{state:p[0],error_code:p[1],provider_id:p[2]});return [{affectedRows:1}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='failed'")){const job=state.jobs.get(p[0]);if(job&&job.scope===p[1]&&job.state==='queued'){Object.assign(job,{state:'failed',error_code:'AI_CANCELLED'});return [{affectedRows:1}];}return [{affectedRows:0}];}
+    if(sql.startsWith("UPDATE ai_jobs SET state='queued'")&&sql.includes('BINARY encrypted_payload')){const j=state.jobs.get(p[1]);if(j&&j.scope===p[2]&&j.state===p[3]&&j.encrypted_payload===p[4]){j.state='queued';j.encrypted_payload=p[0];return [{affectedRows:1}];}return [{affectedRows:0}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='queued'")){const j=state.jobs.get(p[0]);if(j&&j.scope===p[1]&&['failed','needs_review'].includes(j.state)&&j.encrypted_payload){j.state='queued';return [{affectedRows:1}];}return [{affectedRows:0}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='needs_review'")||sql.startsWith('UPDATE ai_jobs SET encrypted_payload=NULL'))return [{affectedRows:0}];
     if(sql.startsWith('DELETE d FROM ai_documents'))return [{affectedRows:0}];
     if(sql.startsWith('SELECT * FROM ai_drive_cleanup'))return [[]];
+    if(sql.startsWith('SELECT provider_id FROM ai_calls'))return [[...state.calls.filter(c=>c.job===p[0]).slice(-1).map(c=>({provider_id:c.provider}))]];
     throw Error('Unexpected SQL: '+sql);
   }};return db;
 }
@@ -151,7 +153,12 @@ test('legacy daily budgets and token settings are ignored; explicit retry still 
   await processNext(db,key,{invoke:async()=>{calls++;throw Object.assign(new Fault(503,'AI_TIMEOUT'),{uncertain:true});}});
   assert.equal((await getJob(db,key,first.job.id,'company-a')).job.state,'needs_review');
   await processNext(db,key,{invoke:async()=>{calls++;}});assert.equal(calls,1);
-  await retryJob(db,first.job.id,'company-a');
+  const retryToken=(await getJob(db,key,first.job.id,'company-a')).job.retryToken;
+  await assert.rejects(()=>retryJob(db,key,first.job.id,'company-b',retryToken),e=>e.code==='AI_JOB_NOT_FOUND');
+  await retryJob(db,key,first.job.id,'company-a',retryToken);
+  db.state.jobs.get(first.job.id).state='needs_review';
+  await assert.rejects(()=>retryJob(db,key,first.job.id,'company-a',retryToken),e=>e.code==='AI_NOT_RETRYABLE');
+  db.state.jobs.get(first.job.id).state='queued';
   await processNext(db,key,{invoke:async()=>{calls++;return {result:{fields:[field]}};}});
   assert.equal(calls,2);assert.equal((await getJob(db,key,first.job.id,'company-a')).job.state,'success');
 });
@@ -185,4 +192,23 @@ test('a job cancelled between queue selection and worker claim cannot be revived
   db.query=async(sql,args)=>{const result=await query(sql,args);if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'")&&!cancelled){cancelled=true;assert.equal((await cancelQueuedJob(db,created.job.id,'company-a')).cancelled,true);}return result;};
   await processNext(db,key,{invoke:async()=>assert.fail('cancelled queued job was revived')});
   assert.equal((await getJob(db,key,created.job.id,'company-a')).job.state,'failed');assert.equal(db.state.calls.length,0);
+});
+test('unknown jobs retain their provider, legacy rows recover it, and only one explicit admin retry is queued',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const input={requestId:'request-timeout-123',scope:'inspection:test',fingerprint:'c'.repeat(64),payload},first=await submit(db,key,input);
+  const transport={phase:'request',reason:'deadline',elapsedMs:180000,timeoutMs:180000};
+  await processNext(db,key,{invoke:async()=>{throw Object.assign(new Fault(503,'AI_TIMEOUT'),{uncertain:true,transport});}});
+  let job=(await getJob(db,key,first.job.id,input.scope)).job;assert.equal(job.state,'needs_review');assert.equal(job.providerId,provider.id);assert.equal(job.errorCode,'AI_UNKNOWN');
+  db.state.jobs.get(first.job.id).provider_id=null;
+  job=(await getJob(db,key,first.job.id,input.scope)).job;assert.equal(job.providerId,provider.id);
+  assert.equal(db.state.health.find(h=>h.provider_id===provider.id).error_code,'AI_TIMEOUT');
+  db.state.health.push({provider_id:'another',error_code:'AI_RATE_LIMIT'});
+  const token=digest(db.state.jobs.get(first.job.id).encrypted_payload);
+  const retries=await Promise.allSettled([retryAdminJob(db,key,first.job.id,token),retryAdminJob(db,key,first.job.id,token)]);
+  assert.equal(retries.filter(r=>r.status==='fulfilled').length,1);assert.equal(db.state.jobs.get(first.job.id).state,'queued');assert.equal(db.state.calls.length,1);
+  assert.equal(db.state.health.some(h=>h.provider_id===provider.id),false);assert.equal(db.state.health[0].error_code,'AI_RATE_LIMIT');
+  await assert.rejects(()=>retryAdminJob(db,key,first.job.id,token),e=>e.code==='AI_NOT_RETRYABLE');
+  db.state.jobs.get(first.job.id).state='needs_review';
+  await assert.rejects(()=>retryAdminJob(db,key,first.job.id,token),e=>e.code==='AI_NOT_RETRYABLE','a stale confirmation cannot retry a new unknown attempt');
+  db.state.jobs.get(first.job.id).state='success';await assert.rejects(()=>retryAdminJob(db,key,first.job.id,digest(db.state.jobs.get(first.job.id).encrypted_payload)),e=>e.code==='AI_NOT_RETRYABLE');
 });

@@ -61,7 +61,27 @@ export function mountAISettings({api,notice,busy,date}){
       try{const audit=await api('/admin/ai/history');if(current!==generation)return;historyRows.replaceChildren();for(const item of audit.items)historyRows.append(node('p',`Phiên bản ${item.revision} · ${item.actor} · ${date(item.created_at)}`));if(!audit.items.length)historyRows.append(node('p','Chưa có thay đổi được ghi nhận.','muted'));}catch{if(current===generation)historyRows.replaceChildren(node('p','Chưa tải được lịch sử. Bạn vẫn có thể quản lý danh sách API.','muted'));}
       try{
         const logs=await api('/admin/ai/diagnostics');if(current!==generation)return;diagnosticRows.replaceChildren();
-        for(const item of logs.items||[]){const entry=node('div',null,'ai-diagnostic');entry.append(node('p',`${date(item.created_at)} · ${item.stage} · ${item.code||item.error_code}`),node('small',`Tác vụ: ${item.jobId||'chưa có'} · API: ${item.providerId||'—'} · File: ${item.fileHash||'—'}`),node('small',`Mã nhật ký: ${item.id}`));if(item.processingId)entry.append(node('small',`Lượt xử lý file: ${item.processingId}`));if(item.driveCredentialId)entry.append(node('small',`Drive: ${item.driveCredentialLabel||item.driveCredentialId}`));if(item.temporaryFileId)entry.append(node('small',`File tạm cần dọn: ${item.temporaryFileId}`));for(const issue of item.details?.issues||[])entry.append(node('p',`${issue.code}: ${issue.path.join('.')}`));diagnosticRows.append(entry);}
+        const retryJobs=new Set();
+        for(const item of logs.items||[]){
+          const entry=node('div',null,'ai-diagnostic'),code=item.code||item.error_code;
+          entry.append(node('p',`${date(item.created_at)} · ${item.stage} · ${code}`),node('small',`Tác vụ: ${item.jobId||'chưa có'} · API: ${item.providerId||'—'} · File: ${item.fileHash||'—'}`),node('small',`Mã nhật ký: ${item.id}`));
+          if(item.processingId)entry.append(node('small',`Lượt xử lý file: ${item.processingId}`));
+          if(item.driveCredentialId)entry.append(node('small',`Drive: ${item.driveCredentialLabel||item.driveCredentialId}`));
+          if(item.temporaryFileId)entry.append(node('small',`File tạm cần dọn: ${item.temporaryFileId}`));
+          const transport=item.details?.transport;
+          if(transport){const reasons={deadline:'hết thời gian chờ',connect_timeout:'hết thời gian kết nối',upstream_timeout:'kết nối bên ngoài hết thời gian',dns:'không phân giải được DNS',tls:'lỗi kết nối TLS',connection_refused:'kết nối bị từ chối',connection_reset:'kết nối bị ngắt',network:'lỗi mạng'};entry.append(node('small',`${transport.phase==='response'?'Đọc phản hồi':'Gửi/chờ phản hồi'}: ${reasons[transport.reason]||'lỗi kết nối'} · ${Math.round(transport.elapsedMs/1000)} giây · thời gian chờ ${Math.round(transport.timeoutMs/1000)} giây`));}
+          for(const issue of item.details?.issues||[])entry.append(node('p',`${issue.code}: ${issue.path.join('.')}`));
+          if(/^[a-f0-9]{64}$/.test(item.jobId||'')&&/^[a-f0-9]{64}$/.test(item.retryToken||'')&&['AI_UNKNOWN','AI_TIMEOUT','AI_NETWORK','AI_INTERRUPTED','AI_INTERNAL'].includes(code)&&!retryJobs.has(item.jobId)){
+            retryJobs.add(item.jobId);
+            const retry=button('Thử lại tác vụ',async()=>{
+              if(!confirm('Lượt gọi trước chưa xác định được kết quả. Gửi lại có thể tạo thêm một lượt gọi AI. Bạn có muốn tiếp tục?'))return;
+              retry.disabled=true;
+              try{await api('/admin/ai/jobs/'+item.jobId+'/retry',{method:'POST',body:JSON.stringify({attemptToken:item.retryToken})});retry.remove();entry.append(node('p','Đã gửi lại tác vụ. Chọn lại file trong Giám định để nhận kết quả.'));}
+              catch(error){retry.disabled=false;notice(error.message,true);}
+            });entry.append(retry);
+          }
+          diagnosticRows.append(entry);
+        }
         if(!logs.items?.length)diagnosticRows.append(node('p','Chưa có lỗi xử lý file được ghi nhận.','muted'));
       }catch{if(current===generation)diagnosticRows.replaceChildren(node('p','Chưa tải được nhật ký lỗi. Chọn Tải lại để thử lại.','muted'));}
     }catch(e){if(current===generation){reload.disabled=false;status.textContent='Chưa tải được danh sách. Chọn Tải lại để thử lại.';notice(e.message,true);}}

@@ -50,7 +50,13 @@ async function readJson(response){
   for await(const chunk of response.body||[]){length+=chunk.length;if(length>1024*1024)throw new Fault(502,'AI_RESPONSE_TOO_LARGE');chunks.push(Buffer.from(chunk));}
   try{return JSON.parse(Buffer.concat(chunks).toString());}catch{throw new Fault(502,'AI_INVALID_JSON');}
 }
-export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,timeoutMs=30000}={}){
+function transportFailure(error,signal,{phase,started,now,timeoutMs}){
+  const cause=String(error?.cause?.code||error?.code||'');
+  const ownDeadline=signal.aborted||['TimeoutError','AbortError'].includes(error?.name),deadline=ownDeadline||['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','ETIMEDOUT'].includes(cause);
+  const reason=ownDeadline?'deadline':cause==='UND_ERR_CONNECT_TIMEOUT'?'connect_timeout':deadline?'upstream_timeout':['ENOTFOUND','EAI_AGAIN'].includes(cause)?'dns':/CERT|TLS|SSL/.test(cause)?'tls':cause==='ECONNREFUSED'?'connection_refused':['ECONNRESET','UND_ERR_SOCKET'].includes(cause)?'connection_reset':'network';
+  return Object.assign(new Fault(503,deadline?'AI_TIMEOUT':'AI_NETWORK'),{uncertain:true,transport:{phase,reason,elapsedMs:Math.max(0,Math.round(now()-started)),timeoutMs}});
+}
+export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,timeoutMs=payload.mode==='recognition-review-v2'?180000:30000,now=Date.now,signalFactory=AbortSignal.timeout}={}){
   const dual=payload.mode==='recognition-review-v2',review=dual||payload.mode==='recognition-review';
   const {document,...scan}=payload;
   if(dual&&(!document||document.mimeType!=='application/pdf'||document.sourceHash!==payload.fileHash||!Buffer.from(document.data||'','base64').subarray(0,5).equals(Buffer.from('%PDF-'))))throw new Fault(502,'AI_DOCUMENT_REQUIRED');
@@ -59,16 +65,16 @@ export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,
   const url=openai?'https://api.openai.com/v1/chat/completions':`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`;
   const body=openai?{model:provider.model,store:false,messages:[{role:'system',content:instructionText},{role:'user',content:dual?[{type:'file',file:{filename:'original-template.pdf',file_data:'data:application/pdf;base64,'+document.data}},{type:'text',text}]:text}],response_format:{type:'json_schema',json_schema:{name:review?'inspection_review':'inspection_mapping',strict:true,schema:responseSchema}}}
     :{systemInstruction:{parts:[{text:instructionText}]},contents:[{role:'user',parts:dual?[{inlineData:{mimeType:'application/pdf',data:document.data}},{text}]:[{text}]}],generationConfig:{responseMimeType:'application/json',responseJsonSchema:responseSchema}};
-  let response;
-  try{response=await fetchImpl(url,{method:'POST',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'Content-Type':'application/json',...(openai?{Authorization:`Bearer ${provider.apiKey}`}:{'x-goog-api-key':provider.apiKey})},body:JSON.stringify(body)});}
-  catch{throw Object.assign(new Fault(503,'AI_TIMEOUT','Chưa xác định được kết quả gọi AI; cần kiểm tra trước khi thử lại.'),{uncertain:true});}
+  const started=now(),signal=signalFactory(timeoutMs);let response;
+  try{response=await fetchImpl(url,{method:'POST',redirect:'error',signal,headers:{'Content-Type':'application/json',...(openai?{Authorization:`Bearer ${provider.apiKey}`}:{'x-goog-api-key':provider.apiKey})},body:JSON.stringify(body)});}
+  catch(error){throw transportFailure(error,signal,{phase:'request',started,now,timeoutMs});}
   if(!response.ok){
     await response.body?.cancel().catch(()=>{});
     const code=response.status===429?'AI_RATE_LIMIT':[401,403].includes(response.status)?'AI_AUTH':response.status>=500?'AI_SERVICE':'AI_CONFIGURATION';
     throw Object.assign(new Fault(response.status,code,'Nhà cung cấp AI chưa xử lý được yêu cầu.'),{retryAfter:Math.min(3600,Math.max(60,Number(response.headers.get('retry-after'))||60))});
   }
   let result;
-  try{result=await readJson(response);}catch(error){if(!(error instanceof Fault))throw Object.assign(new Fault(503,'AI_TIMEOUT'),{uncertain:true});throw error;}
+  try{result=await readJson(response);}catch(error){if(!(error instanceof Fault))throw transportFailure(error,signal,{phase:'response',started,now,timeoutMs});throw error;}
   const usage=openai?{input:result.usage?.prompt_tokens,output:result.usage?.completion_tokens}:{input:result.usageMetadata?.promptTokenCount,output:result.usageMetadata?.candidatesTokenCount === undefined ? undefined : result.usageMetadata.candidatesTokenCount + (result.usageMetadata.thoughtsTokenCount || 0)};
   const usageKnown=Number.isInteger(usage.input)&&usage.input>=0&&Number.isInteger(usage.output)&&usage.output>=0;
   const accounting={usageKnown,usage:{input:Math.max(0,Number(usage.input)||0),output:Math.max(0,Number(usage.output)||0)}};
@@ -93,8 +99,8 @@ export async function failover(providers,payload,{invoke=callProvider,before=asy
     catch(error){
       // No provider body/message is persisted; only bounded internal codes.
       last=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_SERVICE';
-      await after(provider,{state:error.uncertain?'unknown':'failed',code:last,retryAfter:error.retryAfter||60,...(error.issues?{issues:error.issues}:{}),...(error.usage?{usage:error.usage,usageKnown:error.usageKnown}:{})});
-      if(error.uncertain)throw new Fault(503,'AI_UNKNOWN','Yêu cầu AI bị gián đoạn; không tự gọi tiếp để tránh tính phí trùng.');
+      await after(provider,{state:error.uncertain?'unknown':'failed',code:last,retryAfter:error.retryAfter||60,...(error.transport?{transport:error.transport}:{}),...(error.issues?{issues:error.issues}:{}),...(error.usage?{usage:error.usage,usageKnown:error.usageKnown}:{})});
+      if(error.uncertain)throw Object.assign(new Fault(503,'AI_UNKNOWN','Yêu cầu AI bị gián đoạn; cần quản trị viên kiểm tra trước khi gửi lại.'),{providerId:provider.id,...(error.transport?{transport:error.transport}:{})});
       continue;
     }
     await after(provider,{state:'success',...result});

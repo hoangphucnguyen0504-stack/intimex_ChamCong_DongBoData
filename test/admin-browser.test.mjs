@@ -20,7 +20,7 @@ test('admin browser submits login without navigating or reloading', {skip:!chrom
       res.end(JSON.stringify(data));return;
     }
     const name=path==='/'?'index.html':path.slice(1);
-    if(!['index.html','app.js','google-settings.js','retention.js','styles.css','favicon.svg'].includes(name)){res.writeHead(404).end();return;}
+    if(!['index.html','app.js','google-settings.js','retention.js','ai-settings.js','ai-settings.css','styles.css','favicon.svg'].includes(name)){res.writeHead(404).end();return;}
     res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');
     res.end(await readFile(new URL('../public/'+name,import.meta.url)));
   }).listen(0,'127.0.0.1');

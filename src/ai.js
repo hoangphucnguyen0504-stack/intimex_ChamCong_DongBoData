@@ -66,12 +66,33 @@ export async function getJob(pool,key,id,scope){
   const [[job]]=await pool.query('SELECT * FROM ai_jobs WHERE id=? AND scope=?',[id,scope]);
   if(!job)throw new Fault(404,'AI_JOB_NOT_FOUND');
   if(job.state==='success'&&!job.encrypted_result)throw new Fault(410,'AI_JOB_EXPIRED','Kết quả phân tích đã hết hạn. Quét lại mẫu.');
-  return {ok:true,job:{...publicJob(job),...(job.state==='success'?{result:decrypt(job.encrypted_result,key)}:{})}};
+  if(!job.provider_id&&['needs_review','failed'].includes(job.state)){
+    const [[call]]=await pool.query('SELECT provider_id FROM ai_calls WHERE job_id=? ORDER BY created_at DESC LIMIT 1',[id]);job.provider_id=call?.provider_id||null;
+  }
+  return {ok:true,job:{...publicJob(job),...(['failed','needs_review'].includes(job.state)&&job.encrypted_payload?{retryToken:digest(job.encrypted_payload)}:{}),...(job.state==='success'?{result:decrypt(job.encrypted_result,key)}:{})}};
 }
-export async function retryJob(pool,id,scope){
-  const [r]=await pool.query("UPDATE ai_jobs SET state='queued',error_code=NULL,started_at=NULL,finished_at=NULL WHERE id=? AND scope=? AND state IN ('failed','needs_review') AND encrypted_payload IS NOT NULL",[id,scope]);
-  if(!r.affectedRows)throw new Fault(409,'AI_NOT_RETRYABLE','Tác vụ chưa thể thử lại hoặc đã hết hạn.');
-  return {ok:true};
+async function retryVersion(pool,key,id,attemptToken,{scope,states}){
+  z.string().regex(/^[a-f0-9]{64}$/).parse(id);
+  z.string().regex(/^[a-f0-9]{64}$/).parse(attemptToken);
+  return transaction(pool,async db=>{
+    const [[job]]=await db.query('SELECT id,scope,state,provider_id,encrypted_payload FROM ai_jobs WHERE id=?'+(scope?' AND scope=?':''),scope?[id,scope]:[id]);
+    if(!job)throw new Fault(404,'AI_JOB_NOT_FOUND');
+    if(!states.includes(job.state)||!job.encrypted_payload||digest(job.encrypted_payload)!==attemptToken)throw new Fault(409,'AI_NOT_RETRYABLE','Tác vụ đã thay đổi. Tải lại nhật ký trước khi thử lại.');
+    // A fresh encryption IV is an opaque attempt version. A stale confirmation
+    // cannot requeue a later failure, even when both attempts need review.
+    const refreshed=encrypt(decrypt(job.encrypted_payload,key),key);
+    const [claimed]=await db.query("UPDATE ai_jobs SET state='queued',error_code=NULL,started_at=NULL,finished_at=NULL,encrypted_payload=? WHERE id=? AND scope=? AND state=? AND BINARY encrypted_payload=BINARY ?",[refreshed,id,job.scope,job.state,job.encrypted_payload]);
+    if(claimed.affectedRows!==1)throw new Fault(409,'AI_NOT_RETRYABLE');
+    let providerId=job.provider_id;
+    if(!providerId){const [[call]]=await db.query('SELECT provider_id FROM ai_calls WHERE job_id=? ORDER BY created_at DESC LIMIT 1',[id]);providerId=call?.provider_id;}
+    if(providerId)await db.query("DELETE FROM ai_provider_health WHERE provider_id=? AND error_code IN ('AI_TIMEOUT','AI_NETWORK','AI_UNKNOWN')",[providerId]);
+    return {ok:true};
+  });
+}
+export function retryAdminJob(pool,key,id,attemptToken){return retryVersion(pool,key,id,attemptToken,{states:['needs_review']});}
+export function retryJob(pool,key,id,scope,attemptToken){
+  z.string().min(1).max(200).parse(scope);
+  return retryVersion(pool,key,id,attemptToken,{scope,states:['failed','needs_review']});
 }
 export async function cancelQueuedJob(pool,id,scope){
   const input=z.object({id:z.string().regex(/^[a-f0-9]{64}$/),scope:z.string().min(1).max(200)}).parse({id,scope});
@@ -105,15 +126,16 @@ export async function processNext(pool,key,{invoke}={}){
         },
         after:async(provider,result)=>{
           await pool.query('UPDATE ai_calls SET state=?,error_code=? WHERE id=?',[result.state,result.code||null,activeCall.id]);
-          if(result.state!=='success'&&payload.mode?.startsWith('recognition-review'))await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',fileHash:payload.fileHash,jobId:job.id,providerId:provider.id,...safeError({code:result.code,issues:result.issues})});
+          if(result.state!=='success'&&payload.mode?.startsWith('recognition-review'))await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',fileHash:payload.fileHash,jobId:job.id,providerId:provider.id,...safeError(result)});
           if(result.state!=='success')await pool.query('INSERT INTO ai_provider_health(provider_id,cooldown_until,error_code) VALUES(?,UTC_TIMESTAMP(3)+INTERVAL ? SECOND,?) ON DUPLICATE KEY UPDATE cooldown_until=VALUES(cooldown_until),error_code=VALUES(error_code)',[provider.id,result.code==='AI_AUTH'?3600:Math.min(3600,result.retryAfter||60),result.code]);
           else await pool.query('DELETE FROM ai_provider_health WHERE provider_id=?',[provider.id]);
         }});
       await pool.query("UPDATE ai_jobs SET state='success',encrypted_result=?,provider_id=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[encrypt(outcome.result,key),outcome.providerId,job.id]);
     }catch(error){
       const code=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_INTERNAL';
-      await pool.query("UPDATE ai_jobs SET state=?,error_code=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[['AI_UNKNOWN','AI_DOCUMENT_CONVERSION_UNKNOWN','AI_DOCUMENT_CLEANUP_UNTRACKED'].includes(code)||code==='AI_INTERNAL'&&activeCall?'needs_review':'failed',code,job.id]);
-      await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',jobId:job.id,...(sourceFileHash?{fileHash:sourceFileHash}:{}),...safeError(error)});
+      const providerId=activeCall?.provider.id||null;
+      await pool.query("UPDATE ai_jobs SET state=?,error_code=?,provider_id=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[['AI_UNKNOWN','AI_DOCUMENT_CONVERSION_UNKNOWN','AI_DOCUMENT_CLEANUP_UNTRACKED'].includes(code)||code==='AI_INTERNAL'&&activeCall?'needs_review':'failed',code,providerId,job.id]);
+      await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',jobId:job.id,...(sourceFileHash?{fileHash:sourceFileHash}:{}),...(providerId?{providerId}:{}),...safeError(error)});
     }
     return {id:job.id};
   }finally{if(held)await lock.query("SELECT RELEASE_LOCK('datadongbo-ai-worker')").catch(()=>{});lock.release();}
@@ -131,11 +153,12 @@ export function mountAI(app,pool,config){
   app.get('/admin/ai/history',async(_req,res)=>{const [items]=await pool.query('SELECT revision,actor,summary,created_at FROM ai_config_audit ORDER BY id DESC LIMIT 50');res.json({ok:true,items});});
   app.post('/admin/ai/providers/:id/test',async(req,res)=>res.status(202).json(await submit(pool,key,{requestId:'test-'+randomUUID(),scope:'admin:connection-test',fingerprint:digest('connection-test'),payload:{mode:'recognition-review',format:'docx',fileHash:digest('connection-test'),positions:[{id:'test:p0',text:'Hợp đồng: ........',label:'Hợp đồng',context:'Kiểm tra nhận diện bằng dữ liệu giả.',detected:true,writable:true,formula:false,locked:false}]}},{testProviderId:req.params.id})));
   app.get('/admin/ai/jobs/:id',async(req,res)=>res.json(await getJob(pool,key,req.params.id,'admin:connection-test')));
+  app.post('/admin/ai/jobs/:id/retry',async(req,res)=>res.json(await retryAdminJob(pool,key,req.params.id,req.body?.attemptToken)));
   app.post('/v1/ai/jobs',async(req,res)=>{
     try{res.status(202).json(await submit(pool,key,req.body));}
     catch(error){await saveDiagnostic(pool,key,{scope:typeof req.body?.scope==='string'?req.body.scope.slice(0,200):'inspection:file-processing',stage:'submit',...safeError(error)});throw error;}
   });
   app.get('/v1/ai/jobs/:id',async(req,res)=>res.json(await getJob(pool,key,req.params.id,req.query.scope)));
-  app.post('/v1/ai/jobs/:id/retry',async(req,res)=>res.json(await retryJob(pool,req.params.id,req.body?.scope)));
+  app.post('/v1/ai/jobs/:id/retry',async(req,res)=>res.json(await retryJob(pool,key,req.params.id,req.body?.scope,req.body?.attemptToken)));
   app.post('/v1/ai/jobs/:id/cancel',async(req,res)=>res.json(await cancelQueuedJob(pool,req.params.id,req.body?.scope)));
 }
