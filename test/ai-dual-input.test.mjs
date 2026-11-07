@@ -55,9 +55,27 @@ test('worker converts the untouched original with configured Drive credentials a
       if(request.url.endsWith('/export')){if(exportFails)throw Error('sensitive upstream body');return {data:pdf};}
       assert.equal(request.method,'PATCH');assert.deepEqual(request.data,{trashed:true});return {data:{}};
     }});
-    if(exportFails)await assert.rejects(()=>convertOriginal(original,'docx',{pool,key,authFactory}),e=>e.code==='AI_DOCUMENT_CONVERSION'&&!e.message.includes('sensitive'));
+    if(exportFails)await assert.rejects(()=>convertOriginal(original,'docx',{pool,key,authFactory}),e=>e.code==='AI_DOCUMENT_CONVERSION_UNKNOWN'&&!e.message.includes('sensitive'));
     else assert.deepEqual(await convertOriginal(original,'docx',{pool,key,authFactory}),pdf);
     assert.equal(calls.length,3);assert.equal(calls.at(-1).method,'PATCH');
   }
   await assert.rejects(()=>convertOriginal(original,'docx',{pool:{query:async()=>[[]]},key}),e=>e.code==='AI_DOCUMENT_CONVERTER');
+});
+test('backend conversion credential is encrypted with the original and used without a second Drive registry',async()=>{
+  const key='ef'.repeat(32),original=Buffer.concat([Buffer.from([80,75,3,4]),Buffer.from('new-original')]),fileHash=createHash('sha256').update(original).digest('hex');
+  const credential={clientId:'test-id',clientSecret:'never-plaintext-secret',refreshToken:'never-plaintext-refresh',folderId:'test-folder'};let row;
+  const pool={query:async(sql,args)=>{
+    if(sql.startsWith('INSERT INTO ai_documents')){row={id:args[0],scope:args[1],file_hash:args[2],format:args[3],encrypted_original:args[4]};return [{affectedRows:1}];}
+    if(sql.startsWith('UPDATE ai_documents')){row.encrypted_pdf=args[0];return [{affectedRows:1}];}
+    if(sql.startsWith('SELECT * FROM ai_documents'))return [[row]];
+    if(sql.startsWith('SELECT encrypted FROM drive_credential_state'))return [[]];
+    throw Error('Unexpected registry query');
+  }};
+  const saved=await saveDocument(pool,key,{scope:'inspection:test',format:'docx',fileHash,data:original.toString('base64'),conversionCredential:credential});
+  assert(!JSON.stringify(row).includes(credential.clientSecret));assert(!JSON.stringify(row).includes(credential.refreshToken));
+  const result=await documentForReview(pool,key,{documentId:saved.document.id,format:'docx',fileHash},'inspection:test',{convert:async(buffer,format,options)=>{
+    assert.deepEqual(options.credential,credential);assert.deepEqual(buffer,original);
+    return convertOriginal(buffer,format,{...options,authFactory:()=>({setCredentials:()=>{},request:async request=>request.url.includes('/upload/')?{data:{id:'temp-document'}}:request.url.endsWith('/export')?{data:pdf}:{data:{}}})});
+  }});
+  assert.deepEqual(Buffer.from(result.data,'base64'),pdf);assert(!JSON.stringify(result).includes(credential.clientSecret));assert.equal(result.conversionCredential,undefined);
 });

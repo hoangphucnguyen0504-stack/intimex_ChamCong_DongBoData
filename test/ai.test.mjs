@@ -106,6 +106,7 @@ function memoryPool(){
     if(sql.startsWith("UPDATE ai_jobs SET state='queued'")){const j=state.jobs.get(p[0]);if(j&&j.scope===p[1]&&['failed','needs_review'].includes(j.state)&&j.encrypted_payload){j.state='queued';return [{affectedRows:1}];}return [{affectedRows:0}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='needs_review'")||sql.startsWith('UPDATE ai_jobs SET encrypted_payload=NULL'))return [{affectedRows:0}];
     if(sql.startsWith('DELETE d FROM ai_documents'))return [{affectedRows:0}];
+    if(sql.startsWith('SELECT * FROM ai_drive_cleanup'))return [[]];
     throw Error('Unexpected SQL: '+sql);
   }};return db;
 }

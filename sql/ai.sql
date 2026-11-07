@@ -1,3 +1,11 @@
+CREATE TABLE IF NOT EXISTS ai_drive_cleanup (
+ id CHAR(64) PRIMARY KEY,
+ encrypted_details MEDIUMTEXT NOT NULL,
+ attempts INT NOT NULL DEFAULT 0,
+ blocked BOOLEAN NOT NULL DEFAULT FALSE,
+ available_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ INDEX ai_drive_cleanup_due(blocked,available_at)
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS ai_documents (
  id CHAR(64) PRIMARY KEY,
  scope VARCHAR(200) NOT NULL,

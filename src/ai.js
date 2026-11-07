@@ -5,6 +5,7 @@ import {transaction} from './db.js';
 import {payloadSchema,failover} from './aiProviders.js';
 import {saveDiagnostic,safeError,mountDiagnostics} from './aiDiagnostics.js';
 import {saveDocument,assertDocument,documentForReview} from './aiDocuments.js';
+import {processDriveCleanup} from './aiDriveConversion.js';
 
 const providerSchema=z.object({id:z.string().regex(/^[\w-]{1,100}$/),name:z.string().trim().min(1).max(100).optional(),vendor:z.enum(['openai','gemini']),model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/),enabled:z.boolean().default(true),apiKey:z.string().trim().min(8).max(2000).optional()}).strip();
 // Old pricing/limit fields are intentionally discarded when old clients save configuration.
@@ -85,14 +86,16 @@ export async function processNext(pool,key,{invoke}={}){
     await lock.query("UPDATE ai_calls c JOIN ai_jobs j ON j.id=c.job_id SET c.state='unknown',c.error_code='AI_INTERRUPTED' WHERE c.state='running' AND j.state='needs_review'");
     await lock.query('UPDATE ai_jobs SET encrypted_payload=NULL,encrypted_result=NULL WHERE created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND state NOT IN (\'queued\',\'running\')');
     await lock.query("DELETE d FROM ai_documents d WHERE d.created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND NOT EXISTS (SELECT 1 FROM ai_jobs j WHERE j.scope=d.scope AND j.state IN ('queued','running'))");
+    await processDriveCleanup(lock,key);
     const [[job]]=await lock.query("SELECT * FROM ai_jobs WHERE state='queued' ORDER BY created_at LIMIT 1");
     if(!job)return;
     const [claimed]=await lock.query("UPDATE ai_jobs SET state='running',started_at=UTC_TIMESTAMP(3) WHERE id=? AND state='queued'",[job.id]);
     if(claimed.affectedRows!==1)return {id:job.id,skipped:true};
-    let activeCall;
+    let activeCall,sourceFileHash;
     try{
       const cfg=await configuration(pool,key),stored=decrypt(job.encrypted_payload,key),testProviderId=stored.testProviderId;
-      const payload=stored.payload.mode==='recognition-review-v2'?{...stored.payload,document:await documentForReview(pool,key,stored.payload,job.scope)}:stored.payload;
+      sourceFileHash=stored.payload.fileHash;
+      const payload=stored.payload.mode==='recognition-review-v2'?{...stored.payload,document:await documentForReview(pool,key,stored.payload,job.scope,{jobId:job.id})}:stored.payload;
       const [health]=await pool.query('SELECT * FROM ai_provider_health');
       const providers=cfg.providers.filter(p=>p.apiKey&&(!testProviderId||p.id===testProviderId)).map(p=>({...p,cooldownUntil:Date.parse(health.find(h=>h.provider_id===p.id)?.cooldown_until||'')||0}));
       const outcome=await failover(providers,payload,{invoke,
@@ -109,8 +112,8 @@ export async function processNext(pool,key,{invoke}={}){
       await pool.query("UPDATE ai_jobs SET state='success',encrypted_result=?,provider_id=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[encrypt(outcome.result,key),outcome.providerId,job.id]);
     }catch(error){
       const code=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_INTERNAL';
-      await pool.query("UPDATE ai_jobs SET state=?,error_code=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[code==='AI_UNKNOWN'||code==='AI_INTERNAL'&&activeCall?'needs_review':'failed',code,job.id]);
-      await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',jobId:job.id,...safeError(error)});
+      await pool.query("UPDATE ai_jobs SET state=?,error_code=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[['AI_UNKNOWN','AI_DOCUMENT_CONVERSION_UNKNOWN','AI_DOCUMENT_CLEANUP_UNTRACKED'].includes(code)||code==='AI_INTERNAL'&&activeCall?'needs_review':'failed',code,job.id]);
+      await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',jobId:job.id,...(sourceFileHash?{fileHash:sourceFileHash}:{}),...safeError(error)});
     }
     return {id:job.id};
   }finally{if(held)await lock.query("SELECT RELEASE_LOCK('datadongbo-ai-worker')").catch(()=>{});lock.release();}
