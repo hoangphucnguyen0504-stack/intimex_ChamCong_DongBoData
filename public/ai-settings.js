@@ -70,6 +70,8 @@ export function mountAISettings({api,notice,busy,date}){
           if(item.temporaryFileId)entry.append(node('small',`File tạm cần dọn: ${item.temporaryFileId}`));
           const transport=item.details?.transport;
           if(transport){const reasons={deadline:'hết thời gian chờ',connect_timeout:'hết thời gian kết nối',upstream_timeout:'kết nối bên ngoài hết thời gian',dns:'không phân giải được DNS',tls:'lỗi kết nối TLS',connection_refused:'kết nối bị từ chối',connection_reset:'kết nối bị ngắt',network:'lỗi mạng'};entry.append(node('small',`${transport.phase==='response'?'Đọc phản hồi':'Gửi/chờ phản hồi'}: ${reasons[transport.reason]||'lỗi kết nối'} · ${Math.round(transport.elapsedMs/1000)} giây · thời gian chờ ${Math.round(transport.timeoutMs/1000)} giây`));}
+           const upstream=item.details?.upstream;
+           if(upstream)entry.append(node('small',`HTTP ${upstream.status} · ${vendors[upstream.vendor]||upstream.vendor}${upstream.model?' · '+upstream.model:''} · ${Math.round(upstream.elapsedMs/1000)} giây · chờ ${upstream.retryAfterSeconds} giây`));
           for(const issue of item.details?.issues||[])entry.append(node('p',`${issue.code}: ${issue.path.join('.')}`));
           if(/^[a-f0-9]{64}$/.test(item.jobId||'')&&/^[a-f0-9]{64}$/.test(item.retryToken||'')&&['AI_UNKNOWN','AI_TIMEOUT','AI_NETWORK','AI_INTERRUPTED','AI_INTERNAL'].includes(code)&&!retryJobs.has(item.jobId)){
             retryJobs.add(item.jobId);

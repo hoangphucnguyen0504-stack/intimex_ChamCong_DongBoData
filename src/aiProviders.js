@@ -71,10 +71,12 @@ export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,
   if(!response.ok){
     await response.body?.cancel().catch(()=>{});
     const code=response.status===429?'AI_RATE_LIMIT':[401,403].includes(response.status)?'AI_AUTH':response.status>=500?'AI_SERVICE':'AI_CONFIGURATION';
-    throw Object.assign(new Fault(response.status,code,'Nhà cung cấp AI chưa xử lý được yêu cầu.'),{retryAfter:Math.min(3600,Math.max(60,Number(response.headers.get('retry-after'))||60))});
+    const retryAfter=Math.min(3600,Math.max(60,Math.ceil(Number(response.headers.get('retry-after'))||60)));
+    throw Object.assign(new Fault(response.status,code,'Nhà cung cấp AI chưa xử lý được yêu cầu.'),{retryAfter,upstream:{status:response.status,vendor:provider.vendor,...(/^[A-Za-z0-9_.:/@-]{1,100}$/.test(provider.model||'')?{model:provider.model}:{}),elapsedMs:Math.max(0,Math.round(now()-started)),retryAfterSeconds:retryAfter}});
   }
   let result;
   try{result=await readJson(response);}catch(error){if(!(error instanceof Fault))throw transportFailure(error,signal,{phase:'response',started,now,timeoutMs});throw error;}
+  if(!result||typeof result!=='object'||Array.isArray(result))throw new Fault(502,'AI_INVALID_RESPONSE');
   const usage=openai?{input:result.usage?.prompt_tokens,output:result.usage?.completion_tokens}:{input:result.usageMetadata?.promptTokenCount,output:result.usageMetadata?.candidatesTokenCount === undefined ? undefined : result.usageMetadata.candidatesTokenCount + (result.usageMetadata.thoughtsTokenCount || 0)};
   const usageKnown=Number.isInteger(usage.input)&&usage.input>=0&&Number.isInteger(usage.output)&&usage.output>=0;
   const accounting={usageKnown,usage:{input:Math.max(0,Number(usage.input)||0),output:Math.max(0,Number(usage.output)||0)}};
@@ -90,7 +92,7 @@ export async function callProvider(provider,payload,{fetchImpl=globalThis.fetch,
 }
 
 export async function failover(providers,payload,{invoke=callProvider,before=async()=>{},after=async()=>{},now=Date.now}={}){
-  let count=0,last='AI_NO_PROVIDER';
+  let count=0,last='AI_NO_PROVIDER',lastError,lastProvider;
   for(const provider of providers){
     if(!provider.enabled||provider.cooldownUntil>now())continue;
     await before(provider);count++;
@@ -98,13 +100,14 @@ export async function failover(providers,payload,{invoke=callProvider,before=asy
     try{result=await invoke(provider,payload);}
     catch(error){
       // No provider body/message is persisted; only bounded internal codes.
-      last=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_SERVICE';
-      await after(provider,{state:error.uncertain?'unknown':'failed',code:last,retryAfter:error.retryAfter||60,...(error.transport?{transport:error.transport}:{}),...(error.issues?{issues:error.issues}:{}),...(error.usage?{usage:error.usage,usageKnown:error.usageKnown}:{})});
-      if(error.uncertain)throw Object.assign(new Fault(503,'AI_UNKNOWN','Yêu cầu AI bị gián đoạn; cần quản trị viên kiểm tra trước khi gửi lại.'),{providerId:provider.id,...(error.transport?{transport:error.transport}:{})});
+      const known=/^AI_[A-Z_]+$/.test(error?.code||''),uncertain=error?.uncertain||!known;
+      last=known?error.code:'AI_INTERNAL';lastError=error;lastProvider=provider.id;
+      await after(provider,{state:uncertain?'unknown':'failed',code:last,retryAfter:error?.retryAfter||60,...(error?.upstream?{upstream:error.upstream}:{}),...(error?.transport?{transport:error.transport}:{}),...(error?.issues?{issues:error.issues}:{}),...(error?.usage?{usage:error.usage,usageKnown:error.usageKnown}:{})});
+      if(uncertain)throw Object.assign(new Fault(503,'AI_UNKNOWN','Yêu cầu AI bị gián đoạn; cần quản trị viên kiểm tra trước khi gửi lại.'),{providerId:provider.id,...(error?.transport?{transport:error.transport}:{})});
       continue;
     }
     await after(provider,{state:'success',...result});
     return {...result,providerId:provider.id,attempts:count};
   }
-  throw new Fault(503,last,count?'Tất cả API AI khả dụng đều thất bại.':'Chưa có API AI sẵn sàng. Kiểm tra cấu hình hoặc thời gian chờ.');
+  throw Object.assign(new Fault(503,last,count?'Tất cả API AI khả dụng đều thất bại.':'Chưa có API AI sẵn sàng. Kiểm tra cấu hình hoặc thời gian chờ.'),{...(lastProvider?{providerId:lastProvider}:{}),...(lastError?.upstream?{upstream:lastError.upstream}:{}),...(lastError?.issues?{issues:lastError.issues}:{})});
 }

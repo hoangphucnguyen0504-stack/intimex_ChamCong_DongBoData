@@ -44,3 +44,23 @@ test('transport diagnostics are encrypted and reject arbitrary host, key and res
   assert.deepEqual(decrypt(writes[0][4],key).details.transport,transport);assert(!JSON.stringify(writes).includes('private raw response'));
   assert.equal(safeError({code:'AI_NETWORK',transport:{...transport,url:'private-key'}}).details.transport,undefined);
 });
+test('HTTP service failures keep status, elapsed time and retry delay through failover and encrypted diagnostics',async()=>{
+  const events=[];let clock=0;
+  await assert.rejects(()=>failover([provider],payload,{invoke:p=>callProvider(p,payload,{now:()=>clock,fetchImpl:async()=>{clock=7000;return Response.json({error:{message:'private document and key'}},{status:503,headers:{'retry-after':'120'}});}}),after:async(_p,event)=>events.push(event)}),asyncError=>{
+    assert.equal(asyncError.code,'AI_SERVICE');assert.equal(asyncError.providerId,provider.id);
+    assert.deepEqual(asyncError.upstream,{status:503,vendor:'gemini',model:'synthetic-model',elapsedMs:7000,retryAfterSeconds:120});return true;
+  });
+  assert.equal(events[0].upstream.status,503);
+  const key='ef'.repeat(32),writes=[],pool={query:async(_sql,args)=>{writes.push(args);return [{affectedRows:1}];}};
+  await saveDiagnostic(pool,key,{scope:'inspection:test',stage:'review',...safeError(events[0])});
+  assert.equal(decrypt(writes[0][4],key).details.upstream.status,503);assert(!JSON.stringify(events).includes('private'));
+  assert.equal(safeError({code:'AI_SERVICE',upstream:{...events[0].upstream,rawBody:'private'}}).details.upstream,undefined);
+});
+test('unexpected local exceptions are not mislabeled as provider service errors or sent to a second paid API',async()=>{
+  let calls=0;const events=[];
+  await assert.rejects(()=>failover([provider,{...provider,id:'backup'}],payload,{invoke:async()=>{calls++;throw TypeError('private internal details');},after:async(_p,event)=>events.push(event)}),e=>e.code==='AI_UNKNOWN');
+  assert.equal(calls,1);assert.equal(events[0].code,'AI_INTERNAL');assert.equal(events[0].state,'unknown');assert(!JSON.stringify(events).includes('private'));
+});
+test('a JSON null response is an invalid provider response instead of a local TypeError',async()=>{
+  await assert.rejects(()=>callProvider(provider,payload,{fetchImpl:async()=>Response.json(null)}),e=>e.code==='AI_INVALID_RESPONSE');
+});
