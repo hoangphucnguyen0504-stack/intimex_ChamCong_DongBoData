@@ -5,6 +5,7 @@ import {callProvider,payloadSchema} from '../src/aiProviders.js';
 import {validateDual} from '../src/aiRecognitionV2.js';
 import {saveDocument,documentForReview,assertDocument,convertOriginal} from '../src/aiDocuments.js';
 import {decrypt,encrypt} from '../src/core.js';
+import {safeError} from '../src/aiDiagnostics.js';
 const fileHash='a'.repeat(64),documentId='d'.repeat(64),pdf=Buffer.from('%PDF-1.4\nsynthetic-new-layout\n%%EOF');
 const payload={mode:'recognition-review-v2',format:'docx',fileHash,documentId,positions:[{id:'word/document.xml:p0',text:'Vessel: SHIP-TEST',label:'Vessel',context:'Vessel',detected:false,writable:false,formula:false,locked:false}]};
 const output={corrections:[{position:payload.positions[0].id,recognized:true,label:'Vessel',targets:[{start:8,end:17,text:'SHIP-TEST',label:'Vessel',type:'string',kind:'text',repeat:false}]}]};
@@ -25,8 +26,37 @@ test('Gemini and OpenAI receive both actual PDF bytes and full structural scan; 
 });
 test('dual-input validation requires a decision for every position and exact, nonoverlapping, real source spans',()=>{
   assert.deepEqual(validateDual(output,payload),output);
-  for(const mutate of [v=>v.corrections.pop(),v=>v.corrections[0].targets[0].text='invented',v=>v.corrections[0].targets.push({...v.corrections[0].targets[0]}),v=>v.corrections[0].targets[0].start=0,v=>v.corrections[0].source='contractNumber']){const value=structuredClone(output);mutate(value);assert.throws(()=>validateDual(value,payload));}
+  for(const mutate of [v=>v.corrections.pop(),v=>v.corrections[0].targets[0].text='invented',v=>v.corrections[0].targets.push({...v.corrections[0].targets[0]}),v=>v.corrections[0].recognized=false,v=>v.corrections[0].source='contractNumber']){const value=structuredClone(output);mutate(value);assert.throws(()=>validateDual(value,payload));}
   assert.throws(()=>validateDual(output,{...payload,positions:[{...payload.positions[0],locked:true}]}));
+});
+test('source evidence repairs a miscounted offset only when the exact text has one allowed occurrence',()=>{
+  const input=structuredClone(payload),value=structuredClone(output);
+  input.positions[0].text='🚢 Tàu: SHIP-TEST';value.corrections[0].label='Tàu';Object.assign(value.corrections[0].targets[0],{start:0,end:9,label:'Tàu'});
+  const result=validateDual(value,input),target=result.corrections[0].targets[0];
+  assert.equal(target.start,8);assert.equal(target.end,17);assert.equal(input.positions[0].text.slice(target.start,target.end),'SHIP-TEST');
+  assert.equal(value.corrections[0].targets[0].start,0,'validation does not mutate the received AI payload');
+});
+test('offset repair stays within the original range and refuses ambiguous or invented evidence',()=>{
+  const input=structuredClone(payload),value=structuredClone(output);
+  input.positions[0].text='Tel: .... Fax: ....';input.positions[0].id='word/document.xml:p5@range15-19';
+  Object.assign(value.corrections[0],{position:input.positions[0].id,label:'Fax'});
+  Object.assign(value.corrections[0].targets[0],{start:0,end:4,text:'....',label:'Fax'});
+  assert.deepEqual(validateDual(value,input).corrections[0].targets.map(t=>[t.start,t.end]),[[15,19]]);
+  input.positions[0].id='word/document.xml:p5';value.corrections[0].position=input.positions[0].id;
+  assert.throws(()=>validateDual(value,input),e=>e.code==='AI_REVIEW_TARGET'&&e.issues[0].code==='ambiguous_source');
+  value.corrections[0].targets[0].text='not in source';
+  assert.throws(()=>validateDual(value,input),e=>e.issues[0].code==='missing_source');
+});
+test('target validation reports safe distinct reasons without including document text',()=>{
+  for(const [patch,reason] of [[{label:'private-invented-label'},'unsupported_label'],[{repeat:true},'repeat_outside_table'],[{kind:'checkbox'},'invalid_checkbox']]){
+    const value=structuredClone(output);Object.assign(value.corrections[0].targets[0],patch);
+    assert.throws(()=>validateDual(value,payload),error=>{
+      assert.equal(error.code,'AI_REVIEW_TARGET');const diagnostic=safeError(error);
+      assert.equal(diagnostic.details.issues[0].code,reason);
+      assert.deepEqual(diagnostic.details.issues[0].path,['positions',0,'targets',0]);
+      assert(!JSON.stringify(diagnostic).includes('SHIP-TEST'));assert(!JSON.stringify(diagnostic).includes('private-invented-label'));return true;
+    });
+  }
 });
 test('uploaded original is hash verified, encrypted, scope bound, converted once and reused without changing source bytes',async()=>{
   const key='ab'.repeat(32),original=Buffer.concat([Buffer.from([80,75,3,4]),Buffer.from('synthetic-original')]),hash=createHash('sha256').update(original).digest('hex');let row,conversions=0;
