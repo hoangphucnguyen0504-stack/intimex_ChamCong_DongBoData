@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {encrypt,decrypt,Fault} from '../src/core.js';
 import {callProvider,failover,validateOutput,payloadSchema} from '../src/aiProviders.js';
-import {configurationSchema,saveConfiguration,publicConfiguration,submit,getJob,retryJob,processNext} from '../src/ai.js';
+import {configurationSchema,saveConfiguration,publicConfiguration,submit,getJob,retryJob,cancelQueuedJob,processNext} from '../src/ai.js';
 const key='ab'.repeat(32);
 const payload=payloadSchema.parse({format:'docx',positions:[{id:'word/document.xml:p0',text:'{{mass}}',label:'Khối lượng',writable:true}],dictionary:[{key:'business.netKg',label:'Khối lượng',type:'number'}]});
 const field={key:'mass',position:'word/document.xml:p0',source:'business.netKg',label:'Khối lượng',type:'number',rule:'sum',confidence:.9,reason:'Đối chiếu nhãn và vị trí.'};
@@ -87,6 +87,7 @@ function memoryPool(){
     if(sql==='SELECT id FROM ai_configuration WHERE id=1 FOR UPDATE')return [[{id:1}]];
     if(sql.startsWith('UPDATE ai_configuration')){state.cfg={revision:state.cfg.revision+1,encrypted:p[0]};return [{affectedRows:1}];}
     if(sql.startsWith('INSERT INTO ai_config_audit')){state.audit.push(p);return [{affectedRows:1}];}
+    if(sql.startsWith('INSERT IGNORE INTO ai_diagnostics'))return [{affectedRows:1}];
     if(sql.startsWith('SELECT * FROM ai_provider_health'))return [state.health];
     if(sql.startsWith('DELETE FROM ai_provider_health')){state.health=state.health.filter(item=>item.provider_id!==p[0]);return [{affectedRows:1}];}
     if(sql.startsWith('INSERT INTO ai_provider_health')){state.health.push({provider_id:p[0],error_code:p[2]});return [{affectedRows:1}];}
@@ -98,9 +99,10 @@ function memoryPool(){
     if(sql.startsWith('INSERT IGNORE INTO ai_jobs')){if(!state.jobs.has(p[0]))state.jobs.set(p[0],{id:p[0],scope:p[1],fingerprint:p[2],payload_hash:p[3],encrypted_payload:p[4],state:'queued'});return [{affectedRows:1}];}
     if(sql.startsWith('SELECT id,scope')||sql.startsWith('SELECT * FROM ai_jobs WHERE id=')){const job=state.jobs.get(p[0]);return [[...(job&&(!p[1]||job.scope===p[1])?[job]:[])]];}
     if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'"))return [[...([...state.jobs.values()].filter(j=>j.state==='queued').slice(0,1))]];
-    if(sql.startsWith("UPDATE ai_jobs SET state='running'")){state.jobs.get(p[0]).state='running';return [{affectedRows:1}];}
+    if(sql.startsWith("UPDATE ai_jobs SET state='running'")){const job=state.jobs.get(p[0]);if(job.state!=='queued')return [{affectedRows:0}];job.state='running';return [{affectedRows:1}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='success'")){Object.assign(state.jobs.get(p[2]),{state:'success',encrypted_result:p[0],provider_id:p[1]});return [{affectedRows:1}];}
     if(sql.startsWith('UPDATE ai_jobs SET state=?')){Object.assign(state.jobs.get(p[2]),{state:p[0],error_code:p[1]});return [{affectedRows:1}];}
+    if(sql.startsWith("UPDATE ai_jobs SET state='failed'")){const job=state.jobs.get(p[0]);if(job&&job.scope===p[1]&&job.state==='queued'){Object.assign(job,{state:'failed',error_code:'AI_CANCELLED'});return [{affectedRows:1}];}return [{affectedRows:0}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='queued'")){const j=state.jobs.get(p[0]);if(j&&j.scope===p[1]&&['failed','needs_review'].includes(j.state)&&j.encrypted_payload){j.state='queued';return [{affectedRows:1}];}return [{affectedRows:0}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='needs_review'")||sql.startsWith('UPDATE ai_jobs SET encrypted_payload=NULL'))return [{affectedRows:0}];
     throw Error('Unexpected SQL: '+sql);
@@ -162,4 +164,23 @@ test('old stored configuration cannot re-enable cost or token limits before it i
   }
   assert.equal(calls,3);assert.equal(db.state.calls.length,3);
   const stored=decrypt(db.state.cfg.encrypted,key);assert.equal(stored.maxCallsPerDay,1,'reading does not rewrite legacy configuration');
+});
+test('stalled-queue cancellation is scope guarded and never claims to cancel a running paid request',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const created=await submit(db,key,{requestId:'cancel-test',scope:'company-a',fingerprint:'c'.repeat(64),payload});
+  assert.equal((await cancelQueuedJob(db,created.job.id,'other-company')).cancelled,false);
+  assert.equal((await getJob(db,key,created.job.id,'company-a')).job.state,'queued');
+  assert.equal((await cancelQueuedJob(db,created.job.id,'company-a')).cancelled,true);
+  await processNext(db,key,{invoke:async()=>assert.fail('cancelled queued job must never invoke a provider')});
+  db.state.jobs.get(created.job.id).state='running';
+  assert.equal((await cancelQueuedJob(db,created.job.id,'company-a')).cancelled,false);
+  assert.equal((await getJob(db,key,created.job.id,'company-a')).job.state,'running');
+});
+test('a job cancelled between queue selection and worker claim cannot be revived or billed',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const created=await submit(db,key,{requestId:'cancel-race',scope:'company-a',fingerprint:'d'.repeat(64),payload});
+  const query=db.query;let cancelled=false;
+  db.query=async(sql,args)=>{const result=await query(sql,args);if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'")&&!cancelled){cancelled=true;assert.equal((await cancelQueuedJob(db,created.job.id,'company-a')).cancelled,true);}return result;};
+  await processNext(db,key,{invoke:async()=>assert.fail('cancelled queued job was revived')});
+  assert.equal((await getJob(db,key,created.job.id,'company-a')).job.state,'failed');assert.equal(db.state.calls.length,0);
 });

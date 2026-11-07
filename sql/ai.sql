@@ -45,3 +45,12 @@ CREATE TABLE IF NOT EXISTS ai_provider_health (
  cooldown_until DATETIME(3) NOT NULL,
  error_code VARCHAR(80) NULL
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS ai_diagnostics (
+ id CHAR(36) PRIMARY KEY,
+ scope VARCHAR(200) NOT NULL,
+ stage VARCHAR(24) NOT NULL,
+ error_code VARCHAR(80) NOT NULL,
+ encrypted_details MEDIUMTEXT NOT NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ INDEX ai_diagnostic_date(created_at)
+) ENGINE=InnoDB;

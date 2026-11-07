@@ -1,5 +1,15 @@
 # Danh sách API AI
 
+## Kiểm tra nhận diện file chạy ngầm
+
+Cham_cong vẫn quét Word/Excel bằng bộ quét hiện có. Payload `mode: recognition-review` chỉ chứa vị trí cấu trúc thật, văn bản gốc, ngữ cảnh và cờ nhận diện. AI chỉ trả hiệu chỉnh `{position,recognized,label}`; DataDongBo từ chối vị trí mới, ô công thức/vùng khóa, nhãn không có trong văn bản/ngữ cảnh và các trường ánh xạ như source/formula. Không tự ánh xạ dữ liệu.
+
+Quản trị viên xem **Nhật ký lỗi xử lý file** trong tab này: thời gian, giai đoạn, mã lỗi, file/tác vụ/API và đường dẫn trường lỗi. `sql/ai.sql` bổ sung bảng `ai_diagnostics` khi chạy migrate lúc khởi động. Chi tiết mã hóa, không chứa raw provider response hoặc API key. GET `/admin/ai/diagnostics` dùng session quản trị; POST `/v1/ai/diagnostics` dùng bearer token hiện có.
+
+Worker nhận tác vụ bằng cập nhật có điều kiện `state=queued` để không hồi sinh tác vụ đã hủy. POST `/v1/ai/jobs/:id/cancel` chỉ hủy được tác vụ còn queued và đúng scope; không tuyên bố đã hủy request đang chạy. Các lô giống nhau có requestId dùng lại để chống gọi trùng. Mẫu cũ/tác vụ cũ được giữ tương thích, nhưng quy trình mới không gửi mapping tới AI và không công bố kết quả trung gian.
+
+Triển khai web/worker DataDongBo trước backend/frontend Cham_cong. Kiểm thử thêm: `node --test test/ai-recognition.test.mjs`, dữ liệu giả và không gọi AI thật.
+
 Trang quản trị → **Danh sách API AI** hiển thị bảng kết nối. Mỗi dòng chỉ cần chọn **nhà cung cấp**, nhập **tên model** và **API key**. Hỗ trợ Google Gemini và OpenAI; nhập tên model thuần, không nhập URL.
 
 - **Thêm API** tạo dòng mới; điền đủ ba trường rồi **Lưu danh sách API**.

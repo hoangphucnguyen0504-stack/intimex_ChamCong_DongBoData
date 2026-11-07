@@ -13,6 +13,7 @@ export function mountAISettings({api,notice,busy,date}){
   const controls=node('div',null,'ai-footer-actions'),reload=button('Tải lại',()=>{if(!dirty||confirm('Bỏ thay đổi chưa lưu và tải lại?'))open();}),save=node('button','Lưu danh sách API');save.type='submit';controls.append(reload,save);footer.append(hint,controls);form.append(editor,footer);
   panel.append(head,summary,status,form);page.append(panel);
   const history=node('details',null,'panel ai-history');history.append(node('summary','Lịch sử thay đổi'));const historyRows=node('div');history.append(historyRows);page.append(history);
+  const diagnostics=node('details',null,'panel ai-history');diagnostics.append(node('summary','Nhật ký lỗi xử lý file'));const diagnosticRows=node('div');diagnostics.append(diagnosticRows);page.append(diagnostics);
   let config=null,rows=[],dirty=false,generation=0;
   function button(title,fn,label){const b=node('button',title,'ghost');b.type='button';if(label){b.setAttribute('aria-label',label);b.title=label;}b.addEventListener('click',fn);return b;}
   function markDirty(){dirty=true;hint.textContent='Có thay đổi chưa lưu';hint.className='ai-unsaved';}
@@ -58,6 +59,11 @@ export function mountAISettings({api,notice,busy,date}){
     try{
       const r=await api('/admin/ai');if(current!==generation)return;config=r.configuration;dirty=false;render(config.providers);save.disabled=reload.disabled=false;hint.textContent='Các thay đổi chỉ áp dụng sau khi lưu.';hint.className='muted';status.textContent='Đã tải danh sách. API key đã lưu luôn được giữ kín.';
       try{const audit=await api('/admin/ai/history');if(current!==generation)return;historyRows.replaceChildren();for(const item of audit.items)historyRows.append(node('p',`Phiên bản ${item.revision} · ${item.actor} · ${date(item.created_at)}`));if(!audit.items.length)historyRows.append(node('p','Chưa có thay đổi được ghi nhận.','muted'));}catch{if(current===generation)historyRows.replaceChildren(node('p','Chưa tải được lịch sử. Bạn vẫn có thể quản lý danh sách API.','muted'));}
+      try{
+        const logs=await api('/admin/ai/diagnostics');if(current!==generation)return;diagnosticRows.replaceChildren();
+        for(const item of logs.items||[]){const entry=node('div',null,'ai-diagnostic');entry.append(node('p',`${date(item.created_at)} · ${item.stage} · ${item.code||item.error_code}`),node('small',`Tác vụ: ${item.jobId||item.id} · API: ${item.providerId||'—'} · File: ${item.fileHash||'—'}`));for(const issue of item.details?.issues||[])entry.append(node('p',`${issue.code}: ${issue.path.join('.')}`));diagnosticRows.append(entry);}
+        if(!logs.items?.length)diagnosticRows.append(node('p','Chưa có lỗi xử lý file được ghi nhận.','muted'));
+      }catch{if(current===generation)diagnosticRows.replaceChildren(node('p','Chưa tải được nhật ký lỗi. Chọn Tải lại để thử lại.','muted'));}
     }catch(e){if(current===generation){reload.disabled=false;status.textContent='Chưa tải được danh sách. Chọn Tải lại để thử lại.';notice(e.message,true);}}
   }
   form.addEventListener('input',markDirty);form.addEventListener('change',markDirty);
@@ -74,5 +80,5 @@ export function mountAISettings({api,notice,busy,date}){
     }finally{if(current===generation)for(const {control,wasDisabled} of disabled)if(control.isConnected)control.disabled=wasDisabled;}
   });});
   save.disabled=add.disabled=true;
-  return {open:()=>config&&dirty?undefined:open(),clear(){generation++;config=null;rows=[];dirty=false;editor.replaceChildren();historyRows.replaceChildren();count.textContent='';status.textContent='Chưa tải danh sách API.';hint.textContent='Các thay đổi chỉ áp dụng sau khi lưu.';save.disabled=add.disabled=true;}};
+  return {open:()=>config&&dirty?undefined:open(),clear(){generation++;config=null;rows=[];dirty=false;editor.replaceChildren();historyRows.replaceChildren();diagnosticRows.replaceChildren();count.textContent='';status.textContent='Chưa tải danh sách API.';hint.textContent='Các thay đổi chỉ áp dụng sau khi lưu.';save.disabled=add.disabled=true;}};
 }

@@ -3,6 +3,7 @@ import {z} from 'zod';
 import {encrypt,decrypt,digest,stable,Fault} from './core.js';
 import {transaction} from './db.js';
 import {payloadSchema,failover} from './aiProviders.js';
+import {saveDiagnostic,safeError,mountDiagnostics} from './aiDiagnostics.js';
 
 const providerSchema=z.object({id:z.string().regex(/^[\w-]{1,100}$/),name:z.string().trim().min(1).max(100).optional(),vendor:z.enum(['openai','gemini']),model:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/),enabled:z.boolean().default(true),apiKey:z.string().trim().min(8).max(2000).optional()}).strip();
 // Old pricing/limit fields are intentionally discarded when old clients save configuration.
@@ -69,6 +70,11 @@ export async function retryJob(pool,id,scope){
   if(!r.affectedRows)throw new Fault(409,'AI_NOT_RETRYABLE','Tác vụ chưa thể thử lại hoặc đã hết hạn.');
   return {ok:true};
 }
+export async function cancelQueuedJob(pool,id,scope){
+  const input=z.object({id:z.string().regex(/^[a-f0-9]{64}$/),scope:z.string().min(1).max(200)}).parse({id,scope});
+  const [result]=await pool.query("UPDATE ai_jobs SET state='failed',error_code='AI_CANCELLED',finished_at=UTC_TIMESTAMP(3) WHERE id=? AND scope=? AND state='queued'",[input.id,input.scope]);
+  return {ok:true,cancelled:result.affectedRows===1};
+}
 export async function processNext(pool,key,{invoke}={}){
   const lock=await pool.getConnection();let held=false;
   try{
@@ -78,7 +84,8 @@ export async function processNext(pool,key,{invoke}={}){
     await lock.query('UPDATE ai_jobs SET encrypted_payload=NULL,encrypted_result=NULL WHERE created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND state NOT IN (\'queued\',\'running\')');
     const [[job]]=await lock.query("SELECT * FROM ai_jobs WHERE state='queued' ORDER BY created_at LIMIT 1");
     if(!job)return;
-    await lock.query("UPDATE ai_jobs SET state='running',started_at=UTC_TIMESTAMP(3) WHERE id=?",[job.id]);
+    const [claimed]=await lock.query("UPDATE ai_jobs SET state='running',started_at=UTC_TIMESTAMP(3) WHERE id=? AND state='queued'",[job.id]);
+    if(claimed.affectedRows!==1)return {id:job.id,skipped:true};
     let activeCall;
     try{
       const cfg=await configuration(pool,key),{payload,testProviderId}=decrypt(job.encrypted_payload,key);
@@ -91,6 +98,7 @@ export async function processNext(pool,key,{invoke}={}){
         },
         after:async(provider,result)=>{
           await pool.query('UPDATE ai_calls SET state=?,error_code=? WHERE id=?',[result.state,result.code||null,activeCall.id]);
+          if(result.state!=='success'&&payload.mode==='recognition-review')await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',fileHash:payload.fileHash,jobId:job.id,providerId:provider.id,...safeError({code:result.code,issues:result.issues})});
           if(result.state!=='success')await pool.query('INSERT INTO ai_provider_health(provider_id,cooldown_until,error_code) VALUES(?,UTC_TIMESTAMP(3)+INTERVAL ? SECOND,?) ON DUPLICATE KEY UPDATE cooldown_until=VALUES(cooldown_until),error_code=VALUES(error_code)',[provider.id,result.code==='AI_AUTH'?3600:Math.min(3600,result.retryAfter||60),result.code]);
           else await pool.query('DELETE FROM ai_provider_health WHERE provider_id=?',[provider.id]);
         }});
@@ -98,19 +106,25 @@ export async function processNext(pool,key,{invoke}={}){
     }catch(error){
       const code=/^AI_[A-Z_]+$/.test(error.code||'')?error.code:'AI_INTERNAL';
       await pool.query("UPDATE ai_jobs SET state=?,error_code=?,finished_at=UTC_TIMESTAMP(3) WHERE id=?",[code==='AI_UNKNOWN'||code==='AI_INTERNAL'&&activeCall?'needs_review':'failed',code,job.id]);
+      await saveDiagnostic(pool,key,{scope:job.scope,stage:'review',jobId:job.id,...safeError(error)});
     }
     return {id:job.id};
   }finally{if(held)await lock.query("SELECT RELEASE_LOCK('datadongbo-ai-worker')").catch(()=>{});lock.release();}
 }
 export function mountAI(app,pool,config){
   const key=config.CONFIG_ENCRYPTION_KEY;
+  mountDiagnostics(app,pool,key);
   // Mounted after the existing /admin and /v1 authentication middleware.
   app.get('/admin/ai',async(_req,res)=>res.json({ok:true,configuration:await publicConfiguration(pool,key)}));
   app.put('/admin/ai',async(req,res)=>res.json(await saveConfiguration(pool,key,req.body,config.ADMIN_USERNAME)));
   app.get('/admin/ai/history',async(_req,res)=>{const [items]=await pool.query('SELECT revision,actor,summary,created_at FROM ai_config_audit ORDER BY id DESC LIMIT 50');res.json({ok:true,items});});
-  app.post('/admin/ai/providers/:id/test',async(req,res)=>res.status(202).json(await submit(pool,key,{requestId:'test-'+randomUUID(),scope:'admin:connection-test',fingerprint:digest('connection-test'),payload:{format:'docx',positions:[{id:'test:p0',text:'{{contractNumber}}',label:'Số hợp đồng',context:'Kiểm tra kết nối bằng dữ liệu giả.',writable:true,formula:false,placeholders:['contractNumber']}],dictionary:[{key:'contractNumber',label:'Số hợp đồng',type:'string'}]}},{testProviderId:req.params.id})));
+  app.post('/admin/ai/providers/:id/test',async(req,res)=>res.status(202).json(await submit(pool,key,{requestId:'test-'+randomUUID(),scope:'admin:connection-test',fingerprint:digest('connection-test'),payload:{mode:'recognition-review',format:'docx',fileHash:digest('connection-test'),positions:[{id:'test:p0',text:'Hợp đồng: ........',label:'Hợp đồng',context:'Kiểm tra nhận diện bằng dữ liệu giả.',detected:true,writable:true,formula:false,locked:false}]}},{testProviderId:req.params.id})));
   app.get('/admin/ai/jobs/:id',async(req,res)=>res.json(await getJob(pool,key,req.params.id,'admin:connection-test')));
-  app.post('/v1/ai/jobs',async(req,res)=>res.status(202).json(await submit(pool,key,req.body)));
+  app.post('/v1/ai/jobs',async(req,res)=>{
+    try{res.status(202).json(await submit(pool,key,req.body));}
+    catch(error){await saveDiagnostic(pool,key,{scope:typeof req.body?.scope==='string'?req.body.scope.slice(0,200):'inspection:file-processing',stage:'submit',...safeError(error)});throw error;}
+  });
   app.get('/v1/ai/jobs/:id',async(req,res)=>res.json(await getJob(pool,key,req.params.id,req.query.scope)));
   app.post('/v1/ai/jobs/:id/retry',async(req,res)=>res.json(await retryJob(pool,req.params.id,req.body?.scope)));
+  app.post('/v1/ai/jobs/:id/cancel',async(req,res)=>res.json(await cancelQueuedJob(pool,req.params.id,req.body?.scope)));
 }
