@@ -98,8 +98,9 @@ function memoryPool(){
     if(sql.startsWith('UPDATE ai_calls')){const c=state.calls.find(c=>c.id===p[2]);Object.assign(c,{state:p[0],error:p[1]});return [{affectedRows:1}];}
     if(sql.startsWith('INSERT IGNORE INTO ai_jobs')){if(!state.jobs.has(p[0]))state.jobs.set(p[0],{id:p[0],scope:p[1],fingerprint:p[2],payload_hash:p[3],encrypted_payload:p[4],state:'queued'});return [{affectedRows:1}];}
     if(sql.startsWith('SELECT id,scope')||sql.startsWith('SELECT * FROM ai_jobs WHERE id=')){const job=state.jobs.get(p[0]);return [[...(job&&(!p[1]||job.scope===p[1])?[structuredClone(job)]:[])]];}
-    if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'"))return [[...([...state.jobs.values()].filter(j=>j.state==='queued').slice(0,1))]];
+    if(sql.includes("SELECT * FROM ai_jobs WHERE state='queued'"))return [[...([...state.jobs.values()].filter(j=>j.state==='queued'&&(!sql.includes('available_at<=')||!j.available_at||j.available_at<=Date.now())).slice(0,1))]];
     if(sql.startsWith("UPDATE ai_jobs SET state='running'")){const job=state.jobs.get(p[0]);if(job.state!=='queued')return [{affectedRows:0}];job.state='running';return [{affectedRows:1}];}
+    if(sql.startsWith("UPDATE ai_jobs SET state='queued',started_at=NULL")){const job=state.jobs.get(p[1]);if(job?.state!=='running')return [{affectedRows:0}];job.state='queued';job.started_at=null;job.available_at=Date.now()+p[0]*1000;return [{affectedRows:1}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='success'")){Object.assign(state.jobs.get(p[2]),{state:'success',encrypted_result:p[0],provider_id:p[1]});return [{affectedRows:1}];}
     if(sql.startsWith('UPDATE ai_jobs SET state=?')){Object.assign(state.jobs.get(p[3]),{state:p[0],error_code:p[1],provider_id:p[2]});return [{affectedRows:1}];}
     if(sql.startsWith("UPDATE ai_jobs SET state='failed'")){const job=state.jobs.get(p[0]);if(job&&job.scope===p[1]&&job.state==='queued'){Object.assign(job,{state:'failed',error_code:'AI_CANCELLED'});return [{affectedRows:1}];}return [{affectedRows:0}];}
@@ -142,6 +143,55 @@ test('durable jobs are idempotent, encrypted and scope guarded; worker commits r
   let calls=0;await processNext(db,key,{invoke:async()=>{calls++;return {result:{fields:[field]},usage:{input:50,output:20}};}});
   const done=await getJob(db,key,first.job.id,'company-a');assert.equal(done.job.state,'success');assert.equal(done.job.result.fields[0].key,'mass');
   await processNext(db,key,{invoke:async()=>{calls++;}});assert.equal(calls,1);assert.equal(db.state.calls[0].state,'success');
+});
+test('temporary provider cooldown keeps the same job queued without a paid call and resumes after expiry',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const {job}=await submit(db,key,{requestId:'cooldown-wait',scope:'company-a',fingerprint:'a'.repeat(64),payload});
+  db.state.health=[{provider_id:provider.id,error_code:'AI_SERVICE',cooldown_until:new Date(Date.now()+60000).toISOString()}];
+  let calls=0;const invoke=async()=>{calls++;return {result:{fields:[field]}};};
+  await processNext(db,key,{invoke});await processNext(db,key,{invoke});
+  assert.equal((await getJob(db,key,job.id,'company-a')).job.state,'queued');assert.equal(calls,0);assert.equal(db.state.calls.length,0);
+  assert.equal(db.state.health[0].error_code,'AI_SERVICE','waiting must not erase the provider health failure');
+  db.state.health[0].cooldown_until=new Date(Date.now()-1000).toISOString();
+  db.state.jobs.get(job.id).available_at=Date.now()-1000;
+  await processNext(db,key,{invoke});
+  const done=(await getJob(db,key,job.id,'company-a')).job;assert.equal(done.id,job.id);assert.equal(done.state,'success');assert.equal(calls,1);
+});
+test('an available backup is used immediately while the primary is cooling down',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,{revision:0,providers:[provider,{...provider,id:'backup'}]},'admin');
+  const {job}=await submit(db,key,{requestId:'cooldown-backup',scope:'company-a',fingerprint:'a'.repeat(64),payload});
+  db.state.health=[{provider_id:provider.id,error_code:'AI_SERVICE',cooldown_until:new Date(Date.now()+60000).toISOString()}];
+  await processNext(db,key,{invoke:async p=>{assert.equal(p.id,'backup');return {result:{fields:[field]}};}});
+  assert.equal((await getJob(db,key,job.id,'company-a')).job.state,'success');assert.equal(db.state.calls.length,1);
+});
+test('disabled providers do not leave jobs waiting indefinitely for a cooldown',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const {job}=await submit(db,key,{requestId:'cooldown-disabled',scope:'company-a',fingerprint:'a'.repeat(64),payload});
+  await saveConfiguration(db,key,{revision:1,providers:[{...provider,enabled:false}]},'admin');
+  db.state.health=[{provider_id:provider.id,error_code:'AI_SERVICE',cooldown_until:new Date(Date.now()+60000).toISOString()}];
+  await processNext(db,key,{invoke:async()=>{throw Error('must not call disabled provider');}});
+  const failed=(await getJob(db,key,job.id,'company-a')).job;assert.equal(failed.state,'failed');assert.equal(failed.errorCode,'AI_NO_PROVIDER');assert.equal(db.state.calls.length,0);
+});
+test('a cooling connection-test job cannot starve a file job with an available backup',async()=>{
+  const db=memoryPool();await saveConfiguration(db,key,{revision:0,providers:[provider,{...provider,id:'backup'}]},'admin');
+  const first=await submit(db,key,{requestId:'pinned-test',scope:'admin:connection-test',fingerprint:'a'.repeat(64),payload},{testProviderId:provider.id});
+  const second=await submit(db,key,{requestId:'normal-file',scope:'company-a',fingerprint:'b'.repeat(64),payload});
+  db.state.health=[{provider_id:provider.id,error_code:'AI_SERVICE',cooldown_until:new Date(Date.now()+60000).toISOString()}];
+  const invoke=async p=>{assert.equal(p.id,'backup');return {result:{fields:[field]}};};
+  await processNext(db,key,{invoke});await processNext(db,key,{invoke});
+  assert.equal((await getJob(db,key,first.job.id,'admin:connection-test')).job.state,'queued');
+  assert.equal((await getJob(db,key,second.job.id,'company-a')).job.state,'success');assert.equal(db.state.calls.length,1);
+});
+test('a corrected provider resumes a deferred job within one minute instead of its old hour cooldown',async t=>{
+  let clock=Date.now();t.mock.method(Date,'now',()=>clock);
+  const db=memoryPool();await saveConfiguration(db,key,config,'admin');
+  const {job}=await submit(db,key,{requestId:'corrected-provider',scope:'company-a',fingerprint:'a'.repeat(64),payload});
+  db.state.health=[{provider_id:provider.id,error_code:'AI_AUTH',cooldown_until:new Date(clock+3600000).toISOString()}];
+  await processNext(db,key,{invoke:async()=>{throw Error('not available yet');}});
+  await saveConfiguration(db,key,{revision:1,providers:[{...provider,model:'corrected-model'}]},'admin');
+  clock+=61000;
+  await processNext(db,key,{invoke:async p=>{assert.equal(p.model,'corrected-model');return {result:{fields:[field]}};}});
+  assert.equal((await getJob(db,key,job.id,'company-a')).job.state,'success');assert.equal(db.state.calls.length,1);
 });
 test('legacy daily budgets and token settings are ignored; explicit retry still prevents ambiguous duplicate calls',async()=>{
   const db=memoryPool();await saveConfiguration(db,key,{...config,maxCallsPerDay:1,dailyBudgetUsd:0.000001},'admin');

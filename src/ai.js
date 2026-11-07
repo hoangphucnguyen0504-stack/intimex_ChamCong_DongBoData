@@ -81,7 +81,7 @@ async function retryVersion(pool,key,id,attemptToken,{scope,states}){
     // A fresh encryption IV is an opaque attempt version. A stale confirmation
     // cannot requeue a later failure, even when both attempts need review.
     const refreshed=encrypt(decrypt(job.encrypted_payload,key),key);
-    const [claimed]=await db.query("UPDATE ai_jobs SET state='queued',error_code=NULL,started_at=NULL,finished_at=NULL,encrypted_payload=? WHERE id=? AND scope=? AND state=? AND BINARY encrypted_payload=BINARY ?",[refreshed,id,job.scope,job.state,job.encrypted_payload]);
+    const [claimed]=await db.query("UPDATE ai_jobs SET state='queued',error_code=NULL,started_at=NULL,finished_at=NULL,available_at=UTC_TIMESTAMP(3),encrypted_payload=? WHERE id=? AND scope=? AND state=? AND BINARY encrypted_payload=BINARY ?",[refreshed,id,job.scope,job.state,job.encrypted_payload]);
     if(claimed.affectedRows!==1)throw new Fault(409,'AI_NOT_RETRYABLE');
     let providerId=job.provider_id;
     if(!providerId){const [[call]]=await db.query('SELECT provider_id FROM ai_calls WHERE job_id=? ORDER BY created_at DESC LIMIT 1',[id]);providerId=call?.provider_id;}
@@ -108,7 +108,7 @@ export async function processNext(pool,key,{invoke}={}){
     await lock.query('UPDATE ai_jobs SET encrypted_payload=NULL,encrypted_result=NULL WHERE created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND state NOT IN (\'queued\',\'running\')');
     await lock.query("DELETE d FROM ai_documents d WHERE d.created_at<UTC_TIMESTAMP(3)-INTERVAL 14 DAY AND NOT EXISTS (SELECT 1 FROM ai_jobs j WHERE j.scope=d.scope AND j.state IN ('queued','running'))");
     await processDriveCleanup(lock,key);
-    const [[job]]=await lock.query("SELECT * FROM ai_jobs WHERE state='queued' ORDER BY created_at LIMIT 1");
+    const [[job]]=await lock.query("SELECT * FROM ai_jobs WHERE state='queued' AND available_at<=UTC_TIMESTAMP(3) ORDER BY created_at LIMIT 1");
     if(!job)return;
     const [claimed]=await lock.query("UPDATE ai_jobs SET state='running',started_at=UTC_TIMESTAMP(3) WHERE id=? AND state='queued'",[job.id]);
     if(claimed.affectedRows!==1)return {id:job.id,skipped:true};
@@ -116,9 +116,17 @@ export async function processNext(pool,key,{invoke}={}){
     try{
       const cfg=await configuration(pool,key),stored=decrypt(job.encrypted_payload,key),testProviderId=stored.testProviderId;
       sourceFileHash=stored.payload.fileHash;
-      const payload=stored.payload.mode==='recognition-review-v2'?{...stored.payload,document:await documentForReview(pool,key,stored.payload,job.scope,{jobId:job.id})}:stored.payload;
       const [health]=await pool.query('SELECT * FROM ai_provider_health');
       const providers=cfg.providers.filter(p=>p.apiKey&&(!testProviderId||p.id===testProviderId)).map(p=>({...p,cooldownUntil:Date.parse(health.find(h=>h.provider_id===p.id)?.cooldown_until||'')||0}));
+      const enabled=providers.filter(p=>p.enabled);
+      if(enabled.length&&enabled.every(p=>p.cooldownUntil>Date.now())){
+        // Cooldown is temporary availability, not a failed file review. Keep
+        // the same durable job; the next worker tick rechecks provider health.
+        const delay=Math.min(60,Math.max(1,Math.ceil((Math.min(...enabled.map(p=>p.cooldownUntil))-Date.now())/1000)));
+        await pool.query("UPDATE ai_jobs SET state='queued',started_at=NULL,available_at=UTC_TIMESTAMP(3)+INTERVAL ? SECOND WHERE id=? AND state='running'",[delay,job.id]);
+        return {id:job.id,deferred:true};
+      }
+      const payload=stored.payload.mode==='recognition-review-v2'?{...stored.payload,document:await documentForReview(pool,key,stored.payload,job.scope,{jobId:job.id})}:stored.payload;
       const outcome=await failover(providers,payload,{invoke,
         before:async provider=>{
           activeCall={id:randomUUID(),provider};

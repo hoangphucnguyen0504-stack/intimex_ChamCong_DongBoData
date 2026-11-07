@@ -16,6 +16,10 @@ export async function migrate(pool) {
     const credentials=await readFile(new URL('../sql/drive-credentials.sql',import.meta.url),'utf8');
     const ai=await readFile(new URL('../sql/ai.sql',import.meta.url),'utf8');
     for(const sql of (source+';'+credentials+';'+ai).split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
+    const [aiDueCols]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='ai_jobs' AND column_name='available_at'");
+    if(!aiDueCols.length)await conn.query('ALTER TABLE ai_jobs ADD COLUMN available_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)');
+    const [aiDueIndex]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='ai_jobs' AND index_name='ai_job_due'");
+    if(!aiDueIndex.length)await conn.query('ALTER TABLE ai_jobs ADD INDEX ai_job_due (state,available_at,created_at)');
     const retentionSql = await readFile(new URL('../sql/retention.sql', import.meta.url),'utf8');
     for(const sql of retentionSql.split(';').map(s=>s.trim()).filter(Boolean)) await conn.query(sql);
     const [previewCols] = await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='retention_previews' AND column_name='entities'");

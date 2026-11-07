@@ -33,9 +33,11 @@ CREATE TABLE IF NOT EXISTS ai_jobs (
  error_code VARCHAR(80) NULL,
  provider_id VARCHAR(100) NULL,
  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ available_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
  started_at DATETIME(3) NULL,
  finished_at DATETIME(3) NULL,
  INDEX ai_job_queue(state,created_at),
+ INDEX ai_job_due(state,available_at,created_at),
  INDEX ai_job_scope(scope,created_at)
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS ai_calls (
