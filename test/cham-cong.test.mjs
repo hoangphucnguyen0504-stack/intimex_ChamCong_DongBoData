@@ -52,7 +52,7 @@ function readPool(rows,{unmapped=0}={}){
   calls.push({sql,args});
   if(sql.includes('SELECT encrypted'))return [[{encrypted:encrypt({spreadsheetId},key)}]];
   if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Attendance',headers,bootstrap_state:'ready',retention_days:0,next_row:20}]];
-  if(sql.startsWith('SELECT COUNT(*)'))return [[{n:unmapped}]];
+  if(sql.startsWith('SELECT COUNT(*)')||sql.includes('m.id IS NULL'))return [unmapped?[{n:1}]:[]];
   if(sql.startsWith('SELECT r.id'))return [rows];
   return [{}];
  };
@@ -91,9 +91,9 @@ test('unmapped count runs only when after is 0',async()=>{
  const row={id:'ATT-9',data:JSON.stringify({ID:'ATT-9',CreatedAt:'',FullName:'A'}),sheet_row:9};
  const f=readPool([row],{unmapped:3});
  await assert.rejects(()=>readRows(f.pool,key,'Trips',{spreadsheetId}),{code:'UNMAPPED_RECORDS'});
- assert.equal(f.calls.filter(c=>c.sql.startsWith('SELECT COUNT(*)')).length,1);
+ assert.equal(f.calls.filter(c=>c.sql.includes('m.id IS NULL')).length,1);
  const page=await readRows(f.pool,key,'Trips',{spreadsheetId,after:4});
- assert.equal(f.calls.filter(c=>c.sql.startsWith('SELECT COUNT(*)')).length,1);
+ assert.equal(f.calls.filter(c=>c.sql.includes('m.id IS NULL')).length,1);
  assert.equal(page.rows.length,1);assert.equal(page.hasMore,false);assert.equal(page.nextAfter,null);
 });
 test('full page stops before the json byte cap',async()=>{

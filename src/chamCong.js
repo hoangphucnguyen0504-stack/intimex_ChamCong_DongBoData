@@ -9,8 +9,8 @@ const {compatibleHeaders}=compatibility;
 const mappedClean=new Map();
 async function assertMapped(pool,entity){
   if((mappedClean.get(entity)||0)>Date.now())return;
-  const [[{n}]]=await pool.query('SELECT COUNT(*) n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL',[entity]);
-  if(Number(n))throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
+  const [unmapped]=await pool.query('SELECT 1 AS n FROM records r LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND m.id IS NULL LIMIT 1',[entity]);
+  if(unmapped.length)throw new Fault(409,'UNMAPPED_RECORDS','Có bản ghi chưa có vị trí; hoàn tất tác vụ đồng bộ trước khi chuyển đổi.');
   mappedClean.set(entity,Date.now()+60000);
 }
 const cell=z.union([z.string().max(100000),z.number().finite(),z.boolean(),z.null()]);
@@ -190,14 +190,17 @@ export async function readRows(pool,key,entity,query,options={}){
   const refKey="BINARY JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))";
   const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
   const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
-  const [candidates]=latest?await pool.query(`SELECT ranked.id,content.data,ranked.sheet_row FROM (
+  const [candidates]=latest?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
+    SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
       ROW_NUMBER() OVER (PARTITION BY ${refKey} ORDER BY CASE WHEN ${numeric} THEN CAST(${refRevision} AS DECIMAL(30,0)) ELSE 0 END DESC,m.sheet_row) AS revision_rank,
       MIN(CASE WHEN ${numeric} THEN 1 ELSE 0 END) OVER (PARTITION BY ${refKey}) AS numeric_revisions
     FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id
     WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row<=?
-    ) ranked JOIN records content ON content.entity=? AND content.id=ranked.id
-    WHERE (ranked.numeric_revisions=0 OR ranked.revision_rank=1) AND ranked.sheet_row>? ORDER BY ranked.sheet_row LIMIT ?`,[entity,upper,entity,after,limit+1])
+    ) ranked
+    WHERE (ranked.numeric_revisions=0 OR ranked.revision_rank=1) AND ranked.sheet_row>? ORDER BY ranked.sheet_row LIMIT ?
+    ) page JOIN records content ON content.entity=? AND content.id=page.id
+    ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
       ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,

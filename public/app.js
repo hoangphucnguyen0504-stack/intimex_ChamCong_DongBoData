@@ -47,7 +47,10 @@ async function refresh(initial=false) {
 }
 async function refreshKinhDoanh(){
   try{
-    const s=await api('/admin/kinhdoanh/status');const enabled=s.config?.enabled;
+    const statusPromise=api('/admin/kinhdoanh/status');
+    const logsPromise=loadKinhDoanhLogs();
+    logsPromise.catch(()=>{});
+    const s=await statusPromise;const enabled=s.config?.enabled;
     const badgeEl=$('#kd-status-badge');
     badgeEl.textContent=enabled?'Đang hoạt động':'Đã vô hiệu hóa';
     badgeEl.className=enabled?'date-value':'badge error';
@@ -59,7 +62,7 @@ async function refreshKinhDoanh(){
     $('#kd-current-rpm').textContent=st.currentRequestsPerMinute||0;
     $('#kd-avg-latency').textContent=`${st.avgLatencyMs||0} ms`;
     $('#kd-last-req').textContent=st.lastRequestAt?`Truy vấn cuối: ${date(st.lastRequestAt)}`:'Chưa có truy vấn';
-    await loadKinhDoanhLogs();
+    await logsPromise;
   }catch(e){notice('Không thể tải trạng thái Kinh Doanh: '+e.message,true);}
 }
 async function loadKinhDoanhLogs(){

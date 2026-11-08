@@ -11,7 +11,7 @@ function fixture(rows) {
     calls.push({ sql, args });
     if (sql.includes('SELECT encrypted')) return [[{ encrypted: encrypt({ spreadsheetId }, key) }]];
     if (sql.startsWith('SELECT * FROM entities')) return [[{ headers, bootstrap_state: 'ready', next_row: 100, retention_days: 0 }]];
-    if (sql.startsWith('SELECT COUNT(*)')) return [[{ n: 0 }]];
+    if (sql.startsWith('SELECT COUNT(*)') || sql.includes('m.id IS NULL')) return [[]];
     if (sql.includes('ROW_NUMBER() OVER')) return [rows];
     throw Error('Unexpected query: ' + sql);
   } } };
@@ -28,7 +28,7 @@ test('latest reference view ranks revisions before applying pagination and keeps
   assert.ok(query.sql.includes('ranked.sheet_row>?'), 'page only after ranking');
   assert.ok(query.sql.includes('ranked.numeric_revisions=0'), 'non-numeric legacy groups retain full history for the existing JS comparator');
   assert.ok(!/SELECT r\.id,r\.data,m\.sheet_row,/.test(query.sql), 'do not materialize historical JSON payloads inside the ranking table');
-  assert.deepEqual(query.args, ['ReferenceData', 90, 'ReferenceData', 50, 50001]);
+  assert.deepEqual(query.args, ['ReferenceData', 90, 50, 50001, 'ReferenceData']);
 });
 test('latest view cannot silently filter business history or combine with a state key lookup', async () => {
   const f = fixture([]);
