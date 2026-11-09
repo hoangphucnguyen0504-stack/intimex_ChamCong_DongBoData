@@ -131,9 +131,9 @@ function readLookup(query,headers){
   if(id&&(id.length>191||/[\x00-\x1f\x7f]/.test(id)))throw new Fault(400,'INVALID_PAGE');
   if(column&&(!/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(column)||!headers.includes(column)))throw new Fault(400,'INVALID_PAGE');
   if((column==null)!==(value==null))throw new Fault(400,'INVALID_PAGE');
-  if(value&&(value.length>180||/[\x00-\x1f\x7f]/.test(value))){console.log(JSON.stringify({event:'invalid_page',reason:'value',len:value.length}));throw new Fault(400,'INVALID_PAGE');}
+  if(value&&(value.length>180||/[\x00-\x1f\x7f]/.test(value)))throw new Fault(400,'INVALID_PAGE');
   if(status&&status!=='ON_SITE')throw new Fault(400,'INVALID_PAGE');
-  if(normalized&&(status!=='ON_SITE'||!/^[A-Z0-9]{1,40}$/.test(value||''))){console.log(JSON.stringify({event:'invalid_page',reason:'normalized',status:status||''}));throw new Fault(400,'INVALID_PAGE');}
+  if(normalized&&((status&&status!=='ON_SITE')||!/^[A-Z0-9]{1,40}$/.test(value||'')))throw new Fault(400,'INVALID_PAGE');
   if(id&&column)throw new Fault(400,'INVALID_PAGE');
   if(id)return {single:true,sql:'SELECT r.id,r.data,m.sheet_row FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.id=? LIMIT 2',args:[id]};
   const cell=normalized
@@ -156,7 +156,7 @@ export async function readRows(pool,key,entity,query,options={}){
   const headers=json(e.headers);
   const lookup=readLookup(query,headers);
   // Khóa cooldown của xe container dài hơn 180 ký tự: @state/.../<sheet>/<loại>/<hash SĐT>/<hash container>.
-  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids&&!latest)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey)&&(console.log(JSON.stringify({event:'invalid_page',reason:'key',len:stateKey.length}))||true))||
+  if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids&&!latest)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey))||
     (latest&&(entity!=='ReferenceData'||stateKey!=null||lookup||!headers.includes('Key')||!headers.includes('Revision'))))throw new Fault(400,'INVALID_PAGE');
   if(lookup){
     const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
