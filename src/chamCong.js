@@ -22,8 +22,13 @@ export async function assertBinding(pool,key,spreadsheetId){
   if(!spreadsheetId||settings.spreadsheetId!==spreadsheetId)throw new Fault(409,'SOURCE_MISMATCH','Google Sheet của hai dự án không khớp.');
   return settings;
 }
-export async function status(pool,key,spreadsheetId){
+export async function status(pool,key,spreadsheetId,{lite=false}={}){
   await assertBinding(pool,key,spreadsheetId);
+  if(lite){
+    const [entities]=await pool.query('SELECT name,headers,bootstrap_state,retention_days FROM entities');
+    return {ok:true,protocol:'cham-cong-v1',ready:entities.length>0&&entities.every(e=>e.bootstrap_state==='ready'),
+      entities:entities.map(e=>({name:e.name,headers:json(e.headers),bootstrap_state:e.bootstrap_state,retention_days:e.retention_days,records_count:0,pending:0,unmapped:0}))};
+  }
   const [entities]=await pool.query(`SELECT e.name,e.headers,e.bootstrap_state,e.retention_days,COUNT(r.id) records_count,
     COALESCE(SUM(r.dirty=1),0) pending,COALESCE(SUM(r.id IS NOT NULL AND m.id IS NULL),0) unmapped
     FROM entities e LEFT JOIN records r ON r.entity=e.name LEFT JOIN row_map m ON m.entity=r.entity AND m.id=r.id GROUP BY e.name`);
