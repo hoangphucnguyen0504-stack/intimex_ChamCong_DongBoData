@@ -30,6 +30,8 @@ export async function migrate(pool) {
     if(!imageColumns.length)await conn.query('ALTER TABLE image_metadata ADD COLUMN drive_credential_id VARCHAR(100) NULL');
     const [[version]]=await conn.query('SELECT VERSION() AS v');
     const modern=/^(8\.|9\.)/.test(String(version.v));
+    const [stateKey]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='records' AND column_name='state_key'");
+    if(!stateKey.length)await conn.query("ALTER TABLE records ADD COLUMN state_key VARCHAR(255) AS (JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key'))) STORED, ADD INDEX idx_records_state_key (entity, state_key, updated_at)");
     const [indexed]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='records' AND index_name='record_state_key'");
     if(modern&&!indexed.some(row=>row.col==='updated_at')){
       if(indexed.length)await conn.query('ALTER TABLE records DROP INDEX record_state_key');

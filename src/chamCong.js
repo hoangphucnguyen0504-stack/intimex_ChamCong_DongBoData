@@ -179,7 +179,7 @@ export async function readRows(pool,key,entity,query,options={}){
   if(stateKey){
     const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
       FROM records r
-      WHERE r.entity=? AND r.deleted_at IS NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=?
+      WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=?
       ORDER BY r.updated_at DESC LIMIT 1`,[entity,stateKey]);
     revision=latest[0]?.revision||null;
     if(!revision){
@@ -187,7 +187,7 @@ export async function readRows(pool,key,entity,query,options={}){
       return {ok:true,headers,rows:[],upper,hasMore:false,nextAfter:null};
     }
   }
-  const keyFilter=stateKey?" AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
+  const keyFilter=stateKey?" AND r.state_key=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
   // Rank the bounded snapshot before applying the page cursor: otherwise an old
   // revision could reappear on a later page. BINARY matches JavaScript Map keys.
   // Legacy groups with non-numeric revisions keep their original append order
@@ -207,7 +207,7 @@ export async function readRows(pool,key,entity,query,options={}){
     ) page JOIN records content ON content.entity=? AND content.id=page.id
     ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
-      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
+      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
       stateKey?[entity,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
   // A stale map for a soft-deleted record must not become an archive candidate.
