@@ -144,6 +144,50 @@ function readLookup(query,headers){
   if(status){sql+=" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Status'))=?";args.push(status);}
   return {single:false,sql:sql+' ORDER BY m.sheet_row LIMIT 101',args};
 }
+async function prefixLatest(pool,entity,keyPrefix,after,upper,limit){
+  const like=keyPrefix.replace(/[\\%_]/g,ch=>'\\'+ch)+'%';
+  const [rows]=await pool.query(`SELECT r.id,r.data,m.sheet_row,m.id AS map_id,m.archived_at
+    FROM records r
+    JOIN row_map m ON m.entity=r.entity AND m.id=r.id
+    JOIN (
+      SELECT ranked.state_key,ranked.revision FROM (
+        SELECT state_key,JSON_UNQUOTE(JSON_EXTRACT(data,'$.Revision')) AS revision,
+          ROW_NUMBER() OVER (PARTITION BY state_key ORDER BY updated_at DESC, id DESC) AS rn
+        FROM records
+        WHERE entity=? AND deleted_at IS NULL AND state_key LIKE ? ESCAPE '\\\\'
+      ) ranked WHERE ranked.rn=1
+    ) latest ON latest.state_key=r.state_key AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=latest.revision
+    WHERE r.entity=? AND r.deleted_at IS NULL AND m.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?
+    ORDER BY m.sheet_row LIMIT ?`,[entity,like,entity,after,upper,limit]);
+  return rows;
+}
+const stateSlices={
+  weighing:"state_key LIKE 'weighing/%' OR state_key LIKE '%/weighing/%'",
+  vgm:"state_key LIKE 'vgm/%' OR state_key LIKE '%/vgm/%'",
+  catalogs:"state_key LIKE 'catalogs/%' OR state_key LIKE '%/catalogs/%'",
+  'runtime-config':"state_key='runtime-config' OR state_key LIKE '%/runtime-config%'",
+  'account-profiles':"state_key LIKE 'account-profiles/%' OR state_key LIKE '%/account-profiles/%'",
+  'mail-credentials':"state_key LIKE 'mail-credentials/%' OR state_key LIKE '%/mail-credentials/%'",
+  'submission-cooldown-config':"state_key LIKE 'submission-cooldown-config/%' OR state_key LIKE '%/submission-cooldown-config/%'",
+  'telegram-notifications':"state_key LIKE '%telegram-notifications%'",
+  'zalo-notifications':"state_key LIKE '%zalo-notifications%'",
+  'sales-email':"state_key LIKE 'sales-email/%' OR state_key LIKE '%/sales-email/%'",
+  sales:"state_key LIKE 'sales/%' OR state_key LIKE '%/sales/%'"
+};
+export async function revisions(pool,key,spreadsheetId){
+  await assertBinding(pool,key,spreadsheetId);
+  const [entities]=await pool.query("SELECT entity AS name, CONCAT(COUNT(*), ':', DATE_FORMAT(MAX(updated_at), '%Y-%m-%d %H:%i:%s.%f')) AS revision FROM records GROUP BY entity");
+  const token=expr=>`CONCAT(SUM(${expr}), ':', IFNULL(DATE_FORMAT(MAX(CASE WHEN ${expr} THEN updated_at END), '%Y-%m-%d %H:%i:%s.%f'), ''))`;
+  const columns=Object.entries(stateSlices).map(([name,expr])=>`${token(expr)} AS \`${name}\``).join(',');
+  const [[row]]=await pool.query(`SELECT ${columns} FROM records WHERE entity='ApplicationState'`);
+  const values={};
+  for(const item of entities)if(item.revision)values[item.name]=item.revision;
+  for(const name of Object.keys(stateSlices)){
+    const value=row?.[name];
+    if(value&&!String(value).startsWith('0:'))values['ApplicationState:'+name]=value;
+  }
+  return {ok:true,protocol:'cham-cong-revisions-v1',source:spreadsheetId,revisions:values};
+}
 export async function readRows(pool,key,entity,query,options={}){
   await assertBinding(pool,key,query.spreadsheetId);
   const [[e]]=await pool.query('SELECT * FROM entities WHERE name=?',[entity]);
@@ -153,10 +197,12 @@ export async function readRows(pool,key,entity,query,options={}){
   if(!sheets && Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
   const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids',latest=query.view==='latest';
   const stateKey=query.key==null||query.key===''?null:String(query.key);
+  const keyPrefix=query.keyPrefix==null||query.keyPrefix===''?null:String(query.keyPrefix);
   const headers=json(e.headers);
   const lookup=readLookup(query,headers);
   // Khóa cooldown của xe container dài hơn 180 ký tự: @state/.../<sheet>/<loại>/<hash SĐT>/<hash container>.
   if(!Number.isSafeInteger(after)||after<0||!Number.isSafeInteger(upper)||upper<0||!Number.isInteger(limit)||limit<1||limit>50000||(query.view!=null&&!ids&&!latest)||(stateKey!=null&&!/^[\w@./:-]{1,512}$/.test(stateKey))||
+    (keyPrefix!=null&&(stateKey!=null||!/^[\w@./:-]{1,400}$/.test(keyPrefix)))||
     (latest&&(entity!=='ReferenceData'||stateKey!=null||lookup||!headers.includes('Key')||!headers.includes('Revision'))))throw new Fault(400,'INVALID_PAGE');
   if(lookup){
     const [found]=await pool.query(lookup.sql,[entity,...lookup.args]);
@@ -195,7 +241,7 @@ export async function readRows(pool,key,entity,query,options={}){
   const refKey="BINARY JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))";
   const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
   const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
-  const [candidates]=!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
+  const [candidates]=keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
     SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
       ROW_NUMBER() OVER (PARTITION BY ${refKey} ORDER BY CASE WHEN ${numeric} THEN CAST(${refRevision} AS DECIMAL(30,0)) ELSE 0 END DESC,m.sheet_row) AS revision_rank,

@@ -157,6 +157,7 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   app.post('/v1/cham-cong/write-object',async(req,res)=>res.json(await businessSchemas.writeObject(pool,config.CONFIG_ENCRYPTION_KEY,req.body)));
   app.get('/v1/cham-cong/schema-capabilities',(_req,res)=>res.json({ok:true,protocol:'cham-cong-schema-v1',addOptionalFields:true,objectWrites:true}));
   app.get('/v1/cham-cong/status',async(req,res)=>res.json(await chamCong.status(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId,{lite:req.query.lite==='1'})));
+  app.get('/v1/cham-cong/revisions',async(req,res)=>res.json(await chamCong.revisions(pool,config.CONFIG_ENCRYPTION_KEY,req.query.spreadsheetId)));
   app.get('/v1/cham-cong/rows/:entity',async(req,res)=>{
     let sheets;
     try { sheets = sheetsFactory(await getSettings(pool,config.CONFIG_ENCRYPTION_KEY)); } catch {}
@@ -214,3 +215,4 @@ export function createApp(pool,config,{sheetsFactory=s=>new Sheets(s,{gate:quota
   });
   return app;
 }
+
