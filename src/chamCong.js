@@ -195,7 +195,7 @@ export async function readRows(pool,key,entity,query,options={}){
   const refKey="BINARY JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))";
   const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
   const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
-  const [candidates]=latest?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
+  const [candidates]=!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
     SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
       ROW_NUMBER() OVER (PARTITION BY ${refKey} ORDER BY CASE WHEN ${numeric} THEN CAST(${refRevision} AS DECIMAL(30,0)) ELSE 0 END DESC,m.sheet_row) AS revision_rank,
