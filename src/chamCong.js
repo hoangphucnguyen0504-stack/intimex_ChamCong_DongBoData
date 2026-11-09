@@ -207,9 +207,9 @@ export async function readRows(pool,key,entity,query,options={}){
     ) page JOIN records content ON content.entity=? AND content.id=page.id
     ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
-      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=?${keyFilter} ORDER BY m.sheet_row LIMIT ?`
+      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
-      stateKey?[entity,after,upper,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+      stateKey?[entity,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
   // A stale map for a soft-deleted record must not become an archive candidate.
   // Missing, unarchived records indicate broken mapping; never return empty account cells.
   if(candidates.some(row=>row.id==null&&!row.archived_at))throw new Fault(503,'ROW_MAP_RECORD_MISSING','Vị trí dữ liệu không còn bản ghi tương ứng; cần đối chiếu dữ liệu.');
