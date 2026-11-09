@@ -179,7 +179,7 @@ export async function readRows(pool,key,entity,query,options={}){
   if(stateKey){
     const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
       FROM records r
-      WHERE r.entity=? AND r.deleted_at IS NULL AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=?
+      WHERE r.entity=? AND r.deleted_at IS NULL AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=?
       ORDER BY r.updated_at DESC LIMIT 1`,[entity,stateKey]);
     revision=latest[0]?.revision||null;
     if(!revision){
@@ -187,7 +187,7 @@ export async function readRows(pool,key,entity,query,options={}){
       return {ok:true,headers,rows:[],upper,hasMore:false,nextAfter:null};
     }
   }
-  const keyFilter=stateKey?" AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
+  const keyFilter=stateKey?" AND CAST(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')) AS CHAR(255))=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
   // Rank the bounded snapshot before applying the page cursor: otherwise an old
   // revision could reappear on a later page. BINARY matches JavaScript Map keys.
   // Legacy groups with non-numeric revisions keep their original append order

@@ -33,7 +33,7 @@ export async function migrate(pool) {
     const [indexed]=await conn.query("SELECT COLUMN_NAME col FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='records' AND index_name='record_state_key'");
     if(modern&&!indexed.some(row=>row.col==='updated_at')){
       if(indexed.length)await conn.query('ALTER TABLE records DROP INDEX record_state_key');
-      await conn.query("ALTER TABLE records ADD INDEX record_state_key (entity, (CAST(JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key')) AS CHAR(191))), updated_at)");
+      await conn.query("ALTER TABLE records ADD INDEX record_state_key (entity, (CAST(JSON_UNQUOTE(JSON_EXTRACT(data,'$.Key')) AS CHAR(255))), updated_at)");
     }
   } finally {await conn.query("SELECT RELEASE_LOCK('datadongbo-migration')").catch(()=>{});conn.release();}
 }
