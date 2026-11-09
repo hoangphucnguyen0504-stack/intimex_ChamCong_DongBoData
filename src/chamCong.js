@@ -219,6 +219,15 @@ export async function readRows(pool,key,entity,query,options={}){
     }
     return {ok:true,headers,rows:kept.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:more,nextAfter:null};
   }
+  if(query.stamp==='1'){
+    if(!stateKey)throw new Fault(400,'INVALID_PAGE');
+    const [marked]=await pool.query(`SELECT r.updated_at, JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
+      FROM records r WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=?
+      ORDER BY r.updated_at DESC LIMIT 1`,[entity,stateKey]);
+    const row=marked[0];
+    const stamp=row?`${new Date(row.updated_at).toISOString()}:${row.revision||''}`:'empty';
+    return {ok:true,headers,rows:[],stamp,upper,hasMore:false,nextAfter:null};
+  }
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row,m.id AS map_id,m.archived_at':'r.id,r.data,m.sheet_row,m.id AS map_id,m.archived_at';
   let revision=null;
