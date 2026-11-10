@@ -195,7 +195,9 @@ export async function readRows(pool,key,entity,query,options={}){
   if(e.bootstrap_state!=='ready')throw new Fault(409,'IMPORT_REQUIRED','Tài nguyên chưa nhập xong. Không trả dữ liệu rỗng thay thế.');
   const sheets = await resolveSheets(pool, key, options);
   if(!sheets && Number(e.retention_days)>0)throw new Fault(409,'RETENTION_REQUIRES_HISTORY','Đặt lưu vĩnh viễn cho lần chuyển đổi đầu; adapter lịch sử theo khoảng ngày chưa được bật.');
-  const after=Number(query.after||0),upper=Number(query.upper||e.next_row-1),limit=Number(query.limit||50000),ids=query.view==='ids',latest=query.view==='latest';
+  const after=Number(query.after||0),limit=Number(query.limit||50000),ids=query.view==='ids',latest=query.view==='latest';
+  const upperProvided=!(query.upper==null||query.upper==='');
+  let upper=upperProvided?Number(query.upper):Number(e.next_row)-1;
   const stateKey=query.key==null||query.key===''?null:String(query.key);
   const keyPrefix=query.keyPrefix==null||query.keyPrefix===''?null:String(query.keyPrefix);
   const headers=json(e.headers);
@@ -218,6 +220,17 @@ export async function readRows(pool,key,entity,query,options={}){
       }
     }
     return {ok:true,headers,rows:kept.map(row=>headers.map(name=>json(row.data)[name]??'')),upper,hasMore:more,nextAfter:null};
+  }
+  // Derive the first-page ceiling from mapped rows when next_row lags behind inserts.
+  // ID lookup does not use this range, so a stale next_row made lists look empty while get-by-id still worked.
+  if(!upperProvided){
+    const [mapped]=await pool.query('SELECT COALESCE(MAX(sheet_row),0) AS maxRow FROM row_map WHERE entity=? AND deleted_at IS NULL',[entity]);
+    const observed=Number(mapped?.[0]?.maxRow)||0;
+    if(observed>upper){
+      upper=observed;
+      const repaired=observed+1;
+      if(Number(e.next_row)<repaired)await pool.query('UPDATE entities SET next_row=GREATEST(next_row,?) WHERE name=?',[repaired,entity]);
+    }
   }
   if(query.stamp==='1'){
     if(!stateKey)throw new Fault(400,'INVALID_PAGE');

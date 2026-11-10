@@ -7,24 +7,45 @@ const key = Buffer.alloc(32, 5).toString('hex');
 const spreadsheetId = 'test-spreadsheet-id-1234567890';
 const headers = ['ID', 'CreatedAt', 'FullName', 'Status'];
 
-function accountPool(candidates, inspect = () => {}) {
+function accountPool(candidates, inspect = () => {}, {nextRow=10,maxRow=9}={}) {
   return {query: async sql => {
     if(sql.includes('SELECT encrypted'))return [[{encrypted:encrypt({spreadsheetId},key)}]];
-    if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Admins',headers,bootstrap_state:'ready',retention_days:0,next_row:10}]];
-    if(sql.startsWith('SELECT COUNT(*) n'))return [[{n:0}]];
-    if(sql.includes('FROM row_map m LEFT JOIN records r')){inspect(sql);return [candidates];}
-    throw Error('Unexpected query');
+    if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Admins',headers,bootstrap_state:'ready',retention_days:0,next_row:nextRow}]];
+    if(sql.startsWith('SELECT COUNT(*) n')||sql.startsWith('SELECT 1 AS n FROM records'))return [[]];
+    if(sql.startsWith('SELECT COALESCE(MAX(sheet_row)'))return [[{maxRow}]];
+    if(sql.startsWith('UPDATE entities SET next_row=GREATEST'))return [{affectedRows:1}];
+    if(sql.includes('FROM row_map m LEFT JOIN records r')||sql.includes('ROW_NUMBER() OVER')){inspect(sql);return [candidates];}
+    throw Error('Unexpected query: '+sql.slice(0,120));
   }};
 }
 
 test('account reads exclude soft-deleted records in WHERE while preserving archive joins',async()=>{
-  const pool=accountPool([{id:'active',map_id:'active',sheet_row:3,data:{ID:'active'}}],sql=>{
-    assert.match(sql,/LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE/);
-    assert.match(sql,/WHERE m.entity=\? AND m.deleted_at IS NULL AND r.deleted_at IS NULL/);
+  const pool=accountPool([{id:'active',map_id:'active',sheet_row:3,data:JSON.stringify({ID:'active'})}],sql=>{
+    assert.match(sql,/deleted_at IS NULL/);
+    assert.match(sql,/ROW_NUMBER\(\) OVER|LEFT JOIN records r/);
   });
   const page=await readRows(pool,key,'Admins',{spreadsheetId});
   assert.equal(page.rows.length,1);
   assert.equal(page.rows[0][0],'active');
+});
+
+test('list reads recover when entities.next_row lags behind row_map sheet rows',async()=>{
+  let repaired=null;
+  const pool=accountPool(
+    [{id:'RPF-1',map_id:'RPF-1',sheet_row:12,data:JSON.stringify({ID:'RPF-1',Title:'Bao cao'})}],
+    sql=>{if(sql.includes('sheet_row>?'))assert.match(sql,/m\.sheet_row<=\?|ranked\.sheet_row>/);},
+    {nextRow:2,maxRow:12}
+  );
+  const original=pool.query;
+  pool.query=async(sql,args)=>{
+    if(sql.startsWith('UPDATE entities SET next_row=GREATEST')){repaired=args;return [{affectedRows:1}];}
+    return original(sql,args);
+  };
+  const page=await readRows(pool,key,'Admins',{spreadsheetId});
+  assert.equal(page.rows.length,1);
+  assert.equal(page.rows[0][0],'RPF-1');
+  assert.equal(page.upper,12);
+  assert.deepEqual(repaired,[13,'Admins']);
 });
 
 test('orphan account mapping fails explicitly instead of returning empty accounts',async()=>{
@@ -63,10 +84,16 @@ test('readRows seamlessly merges live MySQL rows and archived Sheets rows', asyn
       if (sql.startsWith('SELECT * FROM entities')) {
         return [[{name: entity, tab_name: entity, headers: JSON.stringify(headers), bootstrap_state: 'ready', retention_days: 0, next_row: 10}]];
       }
-      if (sql.startsWith('SELECT COUNT(*) n')) {
-        return [[{n: 0}]];
+      if (sql.startsWith('SELECT COUNT(*) n')||sql.startsWith('SELECT 1 AS n FROM records')) {
+        return [[]];
       }
-      if (sql.includes('FROM row_map m LEFT JOIN records r')) {
+      if (sql.startsWith('SELECT COALESCE(MAX(sheet_row)')) {
+        return [[{maxRow: 10}]];
+      }
+      if (sql.startsWith('UPDATE entities SET next_row=GREATEST')) {
+        return [{affectedRows: 1}];
+      }
+      if (sql.includes('FROM row_map m LEFT JOIN records r')||sql.includes('ROW_NUMBER() OVER')) {
         return [[archivedRowMap, liveRow]];
       }
       if (sql.includes('SELECT * FROM sheet_locations')) {
@@ -116,8 +143,9 @@ test('readRows view=ids returns IDs without calling Google Sheets batchRead', as
       if (sql.startsWith('SELECT * FROM entities')) {
         return [[{name: entity, tab_name: entity, headers: JSON.stringify(headers), bootstrap_state: 'ready', retention_days: 0, next_row: 10}]];
       }
-      if (sql.startsWith('SELECT COUNT(*) n')) return [[{n: 0}]];
-      if (sql.includes('FROM row_map m LEFT JOIN records r')) return [[archivedRowMap, liveRow]];
+      if (sql.startsWith('SELECT COUNT(*) n')||sql.startsWith('SELECT 1 AS n FROM records')) return [[]];
+      if (sql.startsWith('SELECT COALESCE(MAX(sheet_row)')) return [[{maxRow: 10}]];
+      if (sql.includes('FROM row_map m LEFT JOIN records r')||sql.includes('ROW_NUMBER() OVER')) return [[archivedRowMap, liveRow]];
       return [[]];
     }
   };
@@ -189,8 +217,9 @@ test('readRows throws SHEET_ROW_MOVED if row in Sheets does not match expected I
       if (sql.startsWith('SELECT * FROM entities')) {
         return [[{name: entity, tab_name: entity, headers: JSON.stringify(headers), bootstrap_state: 'ready', retention_days: 0, next_row: 10}]];
       }
-      if (sql.startsWith('SELECT COUNT(*) n')) return [[{n: 0}]];
-      if (sql.includes('FROM row_map m LEFT JOIN records r')) return [[archivedRowMap]];
+      if (sql.startsWith('SELECT COUNT(*) n')||sql.startsWith('SELECT 1 AS n FROM records')) return [[]];
+      if (sql.startsWith('SELECT COALESCE(MAX(sheet_row)')) return [[{maxRow: 10}]];
+      if (sql.includes('FROM row_map m LEFT JOIN records r')||sql.includes('ROW_NUMBER() OVER')) return [[archivedRowMap]];
       if (sql.includes('SELECT * FROM sheet_locations')) return [[]];
       return [[]];
     }

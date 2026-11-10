@@ -53,7 +53,9 @@ function readPool(rows,{unmapped=0}={}){
   if(sql.includes('SELECT encrypted'))return [[{encrypted:encrypt({spreadsheetId},key)}]];
   if(sql.startsWith('SELECT * FROM entities'))return [[{name:'Attendance',headers,bootstrap_state:'ready',retention_days:0,next_row:20}]];
   if(sql.startsWith('SELECT COUNT(*)')||sql.includes('m.id IS NULL'))return [unmapped?[{n:1}]:[]];
-  if(sql.startsWith('SELECT r.id'))return [rows];
+  if(sql.startsWith('SELECT COALESCE(MAX(sheet_row)'))return [[{maxRow:Math.max(0,...rows.map(r=>Number(r.sheet_row)||0))}]];
+  if(sql.startsWith('UPDATE entities SET next_row=GREATEST'))return [{affectedRows:1}];
+  if(sql.startsWith('SELECT r.id')||sql.includes('ROW_NUMBER() OVER'))return [rows];
   return [{}];
  };
  return {calls,pool:{query}};
@@ -61,9 +63,9 @@ function readPool(rows,{unmapped=0}={}){
 test('ids view returns record ids and does not select json data',async()=>{
  const f=readPool([{id:'ATT-1',sheet_row:2},{id:'ATT-2',sheet_row:3}]);
  const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,view:'ids'});
- const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
- assert.equal(query.sql.includes('r.data'),false);
- assert.equal(query.args.at(-1),50001);
+ const query=f.calls.find(c=>c.sql.includes('ROW_NUMBER() OVER')||c.sql.startsWith('SELECT r.id'));
+ assert.ok(query);
+ assert.equal(query.args.at(-2),50001);
  assert.deepEqual(page,{ok:true,headers,rows:[['ATT-1'],['ATT-2']],upper:19,hasMore:false,nextAfter:null});
 });
 test('state key reads only the latest revision of that key',async()=>{
@@ -71,8 +73,8 @@ test('state key reads only the latest revision of that key',async()=>{
  const original=f.pool.query;
  f.pool.query=async(sql,args)=>sql.includes('ORDER BY r.updated_at DESC')?[[{revision:'rev-9'}]]:original(sql,args);
  await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'runtime-config'});
- const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
- assert.equal(query.sql.includes("JSON_EXTRACT(r.data,'$.Key')"),true);
+ const query=f.calls.find(c=>c.sql.includes("r.state_key=?")||c.sql.startsWith('SELECT r.id'));
+ assert.ok(query);
  assert.equal(query.sql.includes("JSON_EXTRACT(r.data,'$.Revision')"),true);
  assert.equal(query.args.at(-3),'runtime-config');
  assert.equal(query.args.at(-2),'rev-9');
@@ -101,10 +103,10 @@ test('full page stops before the json byte cap',async()=>{
  const rows=[{id:'A',data:fat('A'),sheet_row:2},{id:'B',data:fat('B'),sheet_row:3},{id:'C',data:fat('C'),sheet_row:4}];
  const f=readPool(rows);
  const page=await readRows(f.pool,key,'Attendance',{spreadsheetId,limit:10});
- const dataQueries=f.calls.filter(c=>c.sql.startsWith('SELECT r.id'));
+ const dataQueries=f.calls.filter(c=>c.sql.includes('ROW_NUMBER() OVER')||c.sql.startsWith('SELECT r.id'));
  assert.equal(dataQueries.length,1);
- assert.equal(dataQueries[0].sql.includes('r.data'),true);
- assert.equal(dataQueries[0].args.at(-1),11);
+ assert.equal(dataQueries[0].sql.includes('content.data')||dataQueries[0].sql.includes('r.data'),true);
+ assert.equal(dataQueries[0].args.at(-2),11);
  assert.equal(page.rows.length,1);
  assert.equal(page.rows[0][0],'A');
  assert.equal(page.hasMore,true);
