@@ -247,7 +247,9 @@ export async function readRows(pool,key,entity,query,options={}){
   // revision could reappear on a later page. BINARY matches JavaScript Map keys.
   // Legacy groups with non-numeric revisions keep their original append order
   // and full history so the existing stable JavaScript comparator remains valid.
-  const refKey="BINARY JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key'))";
+  // Reference rows group by Key. Revision logs such as BclLedger have no Key,
+  // so they group by RecordID. A null key would hide every line except the highest revision.
+  const refKey="BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')),JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.RecordID')),r.id)";
   const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
   const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
   const [candidates]=keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (

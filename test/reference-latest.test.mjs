@@ -16,6 +16,10 @@ function fixture(rows) {
     throw Error('Unexpected query: ' + sql);
   } } };
 }
+function translateRanking(sql) {
+  return sql.replace(/JSON_UNQUOTE\((JSON_EXTRACT\(r\.data,'\$\.[A-Za-z]+'\))\)/g, '$1')
+    .replace(/BINARY COALESCE\((JSON_EXTRACT\(r\.data,'\$\.Key'\)),(JSON_EXTRACT\(r\.data,'\$\.RecordID'\)),r\.id\)/g, 'COALESCE($1,$2,r.id)');
+}
 test('latest reference view ranks revisions before applying pagination and keeps a fixed upper boundary', async () => {
   const f = fixture([{ id: 'current', data: { ID: 'current', Key: 'company', Revision: '4', Value1: 'new' }, sheet_row: 80 }]);
   const result = await readRows(f.pool, key, 'ReferenceData', { spreadsheetId, view: 'latest', after: '50', upper: '90' });
@@ -24,6 +28,7 @@ test('latest reference view ranks revisions before applying pagination and keeps
   assert.equal(result.upper, 90);
   const query = f.calls.find(call => call.sql.includes('ROW_NUMBER() OVER'));
   assert.ok(query.sql.includes('PARTITION BY BINARY'), 'catalog keys remain case sensitive');
+  assert.ok(query.sql.includes("$.RecordID"), 'revision logs group by RecordID when Key is absent');
   assert.ok(query.sql.includes('m.sheet_row<=?'), 'bound snapshot before ranking');
   assert.ok(query.sql.includes('ranked.sheet_row>?'), 'page only after ranking');
   assert.ok(query.sql.includes('ranked.numeric_revisions=0'), 'non-numeric legacy groups retain full history for the existing JS comparator');
@@ -54,9 +59,7 @@ test('ranked projection preserves numeric winners, stable ties, case-sensitive k
   const f = fixture([]), base = f.pool.query;
   f.pool.query = async (sql, args) => {
     if (!sql.includes('ROW_NUMBER() OVER')) return base(sql, args);
-    const translated = sql.replace(/JSON_UNQUOTE\((JSON_EXTRACT\(r\.data,'\$\.[A-Za-z]+'\))\)/g, '$1')
-      .replace(/BINARY (JSON_EXTRACT\(r\.data,'\$\.Key'\))/g, '$1 COLLATE BINARY');
-    return [db.prepare(translated).all(...args)];
+    return [db.prepare(translateRanking(sql)).all(...args)];
   };
   const ids = []; let after = 0;
   do {
@@ -66,4 +69,25 @@ test('ranked projection preserves numeric winners, stable ties, case-sensitive k
     assert.ok(page.nextAfter > after); after = page.nextAfter;
   } while (true);
   assert.deepEqual(ids, ['a-new', 'upper-case', 'legacy-first', 'legacy-number', 'other']);
+});
+test('a new ledger line stays visible beside an older higher revision', async t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close());
+  db.function('regexp', (pattern, value) => value == null ? 0 : Number(new RegExp(pattern).test(value)));
+  db.exec('CREATE TABLE records(entity TEXT,id TEXT,data TEXT,deleted_at TEXT); CREATE TABLE row_map(entity TEXT,id TEXT,sheet_row INTEGER);');
+  const seed = [
+    ['op-a1', 'BCL-A', '1'],
+    ['op-a2', 'BCL-A', '2'],
+    ['op-b1', 'BCL-B', '1'],
+  ];
+  seed.forEach(([id, RecordID, Revision], index) => {
+    db.prepare('INSERT INTO records VALUES(?,?,?,NULL)').run('BclLedger', id, JSON.stringify({ ID: id, CreatedAt: '', RecordID, Revision, DataJSON: '' }));
+    db.prepare('INSERT INTO row_map VALUES(?,?,?)').run('BclLedger', id, index + 1);
+  });
+  const f = fixture([]), base = f.pool.query;
+  f.pool.query = async (sql, args) => {
+    if (!sql.includes('ROW_NUMBER() OVER')) return base(sql, args);
+    return [db.prepare(translateRanking(sql)).all(...args)];
+  };
+  const page = await readRows(f.pool, key, 'BclLedger', { spreadsheetId, after: '0', limit: '20' });
+  assert.deepEqual(page.rows.map(row => row[0]).sort(), ['op-a2', 'op-b1']);
 });
