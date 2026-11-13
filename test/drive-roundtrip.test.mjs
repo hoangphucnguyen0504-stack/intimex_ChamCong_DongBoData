@@ -35,5 +35,5 @@ test('real broker HTTP and encrypted HDoi volume acquire once, survive restart a
  assert.equal((await first.get('hdoi','a')).refreshToken,'TEST-REFRESH-a');
  const bytes=await readFile(join(root,'hdoi.json'),'utf8');
  for(const secret of ['TEST-LOCAL-REFRESH','TEST-REFRESH-a','TEST-REFRESH-b'])assert(!bytes.includes(secret));
- const registry=decrypt(row.encrypted,key);assert.equal(registry.events.length,2);assert.equal(registry.consumers.hdoi.credential.id,'b');
+ const registry=decrypt(row.encrypted,key);assert.equal(registry.events.length,3);assert.equal(registry.consumers.hdoi.credential.id,'b');
 });

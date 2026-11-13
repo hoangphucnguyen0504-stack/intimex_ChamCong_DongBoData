@@ -7,12 +7,12 @@ const id=z.string().min(1).max(100).regex(/^[\w.-]+$/).refine(value=>value!=='pr
 const secret=z.string().max(8192).refine(v=>!/[\x00-\x1f]/.test(v));
 const credentialSchema=z.object({id:id.refine(value=>!['current','environment'].includes(value)).optional(),label:z.string().trim().min(1).max(100),clientId:z.string().trim().min(1).max(512).optional(),clientSecret:secret.optional(),refreshToken:secret.optional(),folderId:z.string().min(1).max(200).regex(/^[\w-]+$/).optional(),enabled:z.boolean()}).strict();
 const saveSchema=z.object({revision:z.number().int().nonnegative(),credentials:z.array(credentialSchema).max(100)}).strict();
-const acquireSchema=z.object({consumer:z.enum(['chamcong','hdoi']),currentId:id.optional(),reason:z.enum(['initial','userRateLimitExceeded','invalid_grant']).default('initial'),requestId:z.string().min(1).max(128).regex(/^[\w:.-]+$/)}).strict();
+const acquireSchema=z.object({consumer:z.enum(['chamcong','hdoi']),currentId:id.optional(),reason:z.enum(['initial','userRateLimitExceeded','invalid_grant','invalid_client','permissionDenied','storageQuotaExceeded','accountDisabled']).default('initial'),requestId:z.string().min(1).max(128).regex(/^[\w:.-]+$/)}).strict();
 const empty=()=>({credentials:[],identities:[],consumers:{},receipts:{},events:[],cooldowns:{}});
 const mask=c=>c?.refreshToken?'••••••••':null;
 const fail=(status,code)=>new Fault(status,code);
 function publicState(state,revision) {
-  return {ok:true,revision,credentials:state.credentials.map(c=>({id:c.id,label:c.label,clientId:c.clientId,folderId:c.folderId,enabled:c.enabled,maskedToken:mask(c),clientSecretConfigured:!!c.clientSecret,refreshTokenConfigured:!!c.refreshToken})),consumers:Object.entries(state.consumers).map(([consumer,a])=>({consumer,credentialId:a.credential.id,label:a.credential.label,maskedToken:mask(a.credential),issuedAt:a.issuedAt,reason:a.reason,version:a.version})),events:state.events};
+  return {ok:true,revision,credentials:state.credentials.map(c=>({id:c.id,label:c.label,clientId:c.clientId,folderId:c.folderId,enabled:c.enabled,maskedToken:mask(c),clientSecretConfigured:!!c.clientSecret,refreshTokenConfigured:!!c.refreshToken,failures:Object.entries(state.failures||{}).filter(([key])=>key.endsWith(':'+c.id)).map(([,value])=>value)})),consumers:Object.entries(state.consumers).map(([consumer,a])=>({consumer,credentialId:a.credential.id,label:a.credential.label,maskedToken:mask(a.credential),issuedAt:a.issuedAt,reason:a.reason,version:a.version,failure:state.failures?.[consumer+':'+a.credential.id]||null})),events:state.events};
 }
 async function defaultDriveFactory(c) {
   const auth=new OAuth2Client(c.clientId,c.clientSecret);auth.setCredentials({refresh_token:c.refreshToken});
@@ -80,17 +80,30 @@ export function createDriveCredentialRegistry(pool,config,{driveFactory=defaultD
         if(state.receipts[receiptKey])return {value:state.receipts[receiptKey]};
         const current=state.consumers[req.consumer];
         let assignment=current;
-        if(!current || (['userRateLimitExceeded','invalid_grant'].includes(req.reason)&&req.currentId===current.credential.id)) {
+        if(!current || (req.reason!=='initial'&&req.currentId===current.credential.id) || state.failures?.[req.consumer+':'+current.credential.id]) {
           const cooldowns=state.cooldowns||={},at=now(),epoch=Date.parse(at);
-          if(current)cooldowns[req.consumer+':'+current.credential.id]=epoch+60000;
-          const available=c=>c.enabled&&(cooldowns[req.consumer+':'+c.id]||0)<=epoch;
+          const failures=state.failures||={};
+          const previousFailure=current&&failures[req.consumer+':'+current.credential.id];
+          const alreadyReported=previousFailure?.requestId===req.requestId;
+          if(current&&req.reason!=='initial'&&req.currentId===current.credential.id&&!alreadyReported){
+            const retryAt=req.reason==='userRateLimitExceeded'?epoch+60000:['permissionDenied','storageQuotaExceeded'].includes(req.reason)?epoch+900000:null;
+            failures[req.consumer+':'+current.credential.id]={consumer:req.consumer,credentialId:current.credential.id,reason:req.reason,requestId:req.requestId,failedAt:at,retryAt:retryAt?new Date(retryAt).toISOString():null};
+            cooldowns[req.consumer+':'+current.credential.id]=retryAt||Number.MAX_SAFE_INTEGER;
+            state.events.unshift({consumer:req.consumer,credentialId:current.credential.id,label:current.credential.label,issuedAt:at,reason:req.reason,version:current.version,status:'failed'});
+            state.events=state.events.slice(0,200);
+          }
+          const failureReason=req.reason==='initial'?(failures[req.consumer+':'+current?.credential.id]?.reason||req.reason):req.reason;
+          const requireFull=['invalid_client','permissionDenied','storageQuotaExceeded','accountDisabled'].includes(failureReason);
+          const available=c=>c.enabled&&(cooldowns[req.consumer+':'+c.id]||0)<=epoch&&(!requireFull||!!c.clientId)&&!(failureReason==='invalid_client'&&current?.credential.clientId&&c.clientId===current.credential.clientId&&c.clientSecret===current.credential.clientSecret);
           const eligible=state.credentials.filter(available);
           let next=eligible[0];
           if(current) {
             const index=state.credentials.findIndex(c=>c.id===current.credential.id);
             next=[...state.credentials.slice(index+1),...state.credentials.slice(0,index+1)].find(c=>available(c)&&c.id!==current.credential.id);
           }
-          if(!next)throw fail(503,'DRIVE_CREDENTIALS_EXHAUSTED');
+          if(!next&&current&&previousFailure?.retryAt&&Date.parse(previousFailure.retryAt)<=epoch&&(alreadyReported||req.reason==='initial'))next=state.credentials.find(c=>c.id===current.credential.id&&c.enabled&&(cooldowns[req.consumer+':'+c.id]||0)<=epoch);
+          if(!next)return {write:true,value:{ok:false,code:'DRIVE_CREDENTIALS_EXHAUSTED'}};
+          delete failures[req.consumer+':'+next.id];
           const {enabled:_enabled,...issuedCredential}=next;
           assignment={credential:{...issuedCredential,revision},version:(current?.version||0)+1,issuedAt:now(),reason:req.reason};
           state.consumers[req.consumer]=assignment;
@@ -100,7 +113,7 @@ export function createDriveCredentialRegistry(pool,config,{driveFactory=defaultD
         const value={ok:true,credential:assignment.credential,version:assignment.version,issuedAt:assignment.issuedAt};
         state.receipts[receiptKey]=value;
         return {write:true,value};
-      });
+      }).then(result=>{if(result.ok===false)throw fail(503,result.code);return result;});
     }
   };
 }

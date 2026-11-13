@@ -1,6 +1,6 @@
 const $=selector=>document.querySelector(selector);
 const serviceName=value=>({chamcong:'ChamCong',hdoi:'HDoi'}[value]||value);
-const reasonName=value=>value==='userRateLimitExceeded'?'Giới hạn theo tài khoản':value==='initial'?'Nhận cấu hình lần đầu':value||'—';
+const reasonName=value=>({initial:'Nhận cấu hình lần đầu',userRateLimitExceeded:'Giới hạn theo tài khoản',invalid_grant:'Token hết hạn hoặc bị thu hồi',invalid_client:'Cấu hình OAuth không hợp lệ',permissionDenied:'Mất quyền truy cập hoặc ghi',storageQuotaExceeded:'Hết dung lượng Drive',accountDisabled:'Tài khoản bị vô hiệu hóa'}[value]||value||'—');
 export function spreadsheetId(value){
   const text=String(value||'').trim();
   if(!text.startsWith('https://'))return text;
@@ -60,7 +60,8 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
       $(selector).textContent='Tổng '+items.length+' · Đã lưu '+saved+' · Đang bật '+enabled+' · Đã tắt '+(items.length-enabled)+' · Mới chưa lưu '+(items.length-saved);
     };
     count('#drive-accounts-count',accounts);count('#drive-credentials-count',tokens);
-    const cells=item=>[item.enabled===false?'Đã tắt':'Đang bật',item.refreshToken?'Đã nhập — chờ lưu':item.refreshTokenConfigured?'Đã lưu (ẩn nội dung)':'Chưa nhập',button('Chỉnh sửa',()=>editCredential(item.index))];
+    const health=item=>(item.failures||[]).map(f=>serviceName(f.consumer)+': '+reasonName(f.reason)+(f.retryAt?' · Tạm ngưng đến '+date(f.retryAt):' · Cần cập nhật cấu hình')).join('; ');
+    const cells=item=>[(item.enabled===false?'Đã tắt':'Đang bật')+(health(item)?' · '+health(item):''),item.refreshToken?'Đã nhập — chờ lưu':item.refreshTokenConfigured?'Đã lưu (ẩn nội dung)':'Chưa nhập',button('Chỉnh sửa',()=>editCredential(item.index))];
     table('#drive-account-list',accounts,item=>[item.index+1,item.label||'Chưa đặt tên',item.folderId||'Chưa nhập',...cells(item)]);
     table('#drive-token-list',tokens,item=>[item.index+1,item.label||'Chưa đặt tên',...cells(item)]);
   }
@@ -101,8 +102,8 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
     const assigned=new Map((data.consumers||[]).map(item=>[item.consumer,item]));
     table('#drive-consumers',['chamcong','hdoi'].map(consumer=>assigned.get(consumer)||{consumer}),item=>[
       serviceName(item.consumer),item.credentialId?(item.label+' · '+item.credentialId):'Chưa được cấp từ danh sách',
-      item.maskedToken||'—',item.issuedAt?date(item.issuedAt):'Chưa có',reasonName(item.reason)]);
-    table('#drive-credential-events',data.events||[],item=>[serviceName(item.consumer),item.label+' · '+item.credentialId,date(item.issuedAt),reasonName(item.reason),item.version]);
+      item.maskedToken||'—',item.issuedAt?date(item.issuedAt):'Chưa có',reasonName(item.reason),item.failure?reasonName(item.failure.reason):item.credentialId?'Đã cấp — chưa ghi nhận lỗi':'Chưa được cấp']);
+    table('#drive-credential-events',data.events||[],item=>[serviceName(item.consumer),item.label+' · '+item.credentialId,date(item.issuedAt),reasonName(item.reason),item.version,item.status==='failed'?'Gặp lỗi — yêu cầu dự phòng':'Đã cấp']);
   }
   async function loadDrive(replaceEditor=true){
     if(replaceEditor&&dirty&&!confirm('Tải lại sẽ bỏ bản nháp cấu hình Drive. Tiếp tục?'))return;

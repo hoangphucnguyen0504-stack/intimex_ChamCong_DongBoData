@@ -79,7 +79,7 @@ test('durable acquisition, idempotency and concurrent stale failures advance onc
   const restarted=createDriveCredentialRegistry(pool,{CONFIG_ENCRYPTION_KEY:key});
   assert.equal((await restarted.acquire({consumer:'chamcong',requestId:'restart'})).credential.id,'b');
   assert.equal((await restarted.acquire({consumer:'hdoi',requestId:'other'})).credential.id,'a');
-  const admin=await restarted.get();assert.equal(admin.events.length,3);assert.equal(admin.events[0].status,'issued');
+  const admin=await restarted.get();assert.equal(admin.events.length,4);assert.equal(admin.events[0].status,'issued');
   assert.equal(JSON.stringify(admin).includes('secret-a'),false);
 });
 test('safe exhaustion, invalid reasons and provider failures',async()=>{
