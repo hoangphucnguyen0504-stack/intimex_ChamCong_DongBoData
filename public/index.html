@@ -41,11 +41,22 @@
       <form id="drive-credentials-form" class="panel">
         <div class="section-head"><div><h2>Quản lý tài khoản Drive và token dự phòng</h2><p class="muted">Thêm tài khoản Drive với cấu hình riêng hoặc thêm token dự phòng dùng cấu hình của dịch vụ. Thứ tự trong bảng là thứ tự ưu tiên cấp.</p></div><button type="button" id="reload-drive-credentials" class="ghost">Tải lại danh sách token</button></div>
         <p id="drive-credentials-status" class="muted" role="status"></p>
-        <p id="drive-credentials-count" role="status">Chưa tải danh sách token.</p>
-        <div class="actions"><button type="button" id="add-drive-account" disabled>+ Thêm tài khoản Drive</button><button type="button" id="add-drive-credential" class="ghost" disabled>+ Thêm token dự phòng</button><button type="submit" id="save-drive-credentials" disabled>Lưu danh sách Drive</button></div>
-        <div class="table-scroll"><table><caption>Danh sách tài khoản Drive và token dự phòng</caption><thead><tr><th>Ưu tiên</th><th>Tên</th><th>Loại cấu hình</th><th>Thư mục Drive</th><th>Trạng thái</th><th>Token</th><th>Thao tác</th></tr></thead><tbody id="drive-token-list"></tbody></table></div>
-        <p class="muted">Bấm Chỉnh sửa để đổi tên, thay token, bật/tắt, sắp xếp hoặc xóa. Token mới dùng Client ID, Client Secret và thư mục Drive của dịch vụ nhận. Để trống token đã lưu để giữ nguyên.</p>
-        <div id="drive-credentials-editor"></div>
+        <section class="panel" aria-labelledby="drive-accounts-heading">
+          <div class="section-head"><h3 id="drive-accounts-heading">Tài khoản Drive</h3><button type="button" id="add-drive-account" disabled>+ Thêm tài khoản Drive</button></div>
+          <p id="drive-accounts-count" role="status">Chưa tải tài khoản Drive.</p>
+          <div class="table-scroll"><table><caption>Danh sách tài khoản Drive</caption><thead><tr><th>Ưu tiên cấp</th><th>Tên tài khoản</th><th>Thư mục Drive</th><th>Trạng thái</th><th>Token</th><th>Thao tác</th></tr></thead><tbody id="drive-account-list"></tbody></table></div>
+          <p class="muted">Mỗi tài khoản có Client ID, Client Secret, refresh token và thư mục Drive riêng.</p>
+          <div id="drive-account-editor"></div>
+        </section>
+        <section class="panel" aria-labelledby="drive-tokens-heading">
+          <div class="section-head"><h3 id="drive-tokens-heading">Token dự phòng</h3><button type="button" id="add-drive-credential" disabled>+ Thêm token dự phòng</button></div>
+          <p id="drive-credentials-count" role="status">Chưa tải token dự phòng.</p>
+          <div class="table-scroll"><table><caption>Danh sách token dự phòng</caption><thead><tr><th>Ưu tiên cấp</th><th>Tên token</th><th>Trạng thái</th><th>Token</th><th>Thao tác</th></tr></thead><tbody id="drive-token-list"></tbody></table></div>
+          <p class="muted">Token dự phòng dùng Client ID, Client Secret và thư mục Drive của dịch vụ nhận.</p>
+          <div id="drive-credentials-editor"></div>
+        </section>
+        <p class="muted">Bấm Chỉnh sửa để cập nhật, bật/tắt, sắp xếp hoặc xóa. Ưu tiên cấp được tính chung giữa hai bảng. Để trống secret/token đã lưu để giữ nguyên.</p>
+        <div class="actions"><button type="submit" id="save-drive-credentials" disabled>Lưu thay đổi hai danh sách</button></div>
       </form>
       <div class="panel"><div class="section-head"><h2>Cấu hình Drive đã cấp cho các dịch vụ</h2><button type="button" id="refresh-drive-issuance" class="ghost">Cập nhật danh sách đã cấp</button></div><p class="muted">Hiển thị cấu hình DataDongBo đã cấp gần nhất cho ChamCong và HDoi. Dịch vụ lưu lại để dùng; không gọi lấy token liên tục. Đây không phải kiểm tra kết nối trực tiếp.</p><div class="table-scroll"><table><thead><tr><th>Dịch vụ</th><th>Cấu hình / Mã</th><th>Token</th><th>Đã cấp lúc</th><th>Lý do</th></tr></thead><tbody id="drive-consumers"></tbody></table></div><details><summary>Lịch sử cấp cấu hình</summary><div class="table-scroll"><table><thead><tr><th>Dịch vụ</th><th>Cấu hình</th><th>Đã cấp lúc</th><th>Lý do</th><th>Phiên bản</th></tr></thead><tbody id="drive-credential-events"></tbody></table></div></details></div>
       <div class="panel"><h2>Quy tắc vận hành</h2><p>MySQL là nguồn dữ liệu chính. Google Sheets nhận các thay đổi theo lô. Không chỉnh tay vị trí dòng, cột ID và các cột <code>__dd_*</code> của tab đang liên kết.</p><p>Xóa cuốn chiếu chỉ áp dụng cho tài nguyên đã bật lưu trữ, bản ghi đã hoàn tất, đã đồng bộ phiên bản mới nhất và không thay đổi trong thời hạn lưu. Dữ liệu danh mục/tài khoản nên giữ vĩnh viễn.</p></div>
