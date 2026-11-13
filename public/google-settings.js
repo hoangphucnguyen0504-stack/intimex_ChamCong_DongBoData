@@ -46,15 +46,30 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
     });
     $('#add-sheet-target').disabled=targets.length>=20;
   }
+  function editCredential(index){
+    const card=$('#drive-credentials-editor').children[index];
+    if(!card)return;
+    card.open=true;credentials[index].editing=true;
+    card.scrollIntoView({behavior:'smooth',block:'center'});
+    card.querySelector('input')?.focus({preventScroll:true});
+  }
+  function renderTokenList(){
+    const saved=credentials.filter(item=>item.id).length,enabled=credentials.filter(item=>item.enabled!==false).length;
+    $('#drive-credentials-count').textContent='Tổng '+credentials.length+' token · Đã lưu '+saved+' · Đang bật '+enabled+' · Đã tắt '+(credentials.length-enabled)+' · Chưa lưu '+(credentials.length-saved);
+    table('#drive-token-list',credentials.map((item,index)=>({...item,index})),item=>[
+      item.index+1,item.label||'Token chưa đặt tên',item.enabled===false?'Đã tắt':'Đang bật',
+      item.refreshToken?'Đã nhập — chờ lưu':item.refreshTokenConfigured?'Đã lưu (ẩn nội dung)':'Chưa nhập',
+      button('Chỉnh sửa',()=>editCredential(item.index))]);
+  }
   function renderCredentials(){
     const box=$('#drive-credentials-editor');box.replaceChildren();
-    if(!credentials.length)box.textContent='Chưa có tài khoản Drive dự phòng. Bấm “Thêm tài khoản Drive” để thêm.';
+    if(!credentials.length)box.textContent='Chưa có token dự phòng. Bấm “Thêm token dự phòng” ở trên để thêm.';
     credentials.forEach((credential,index)=>{
       const card=document.createElement('details'),head=document.createElement('summary'),title=document.createElement('strong'),fields=document.createElement('div'),code=document.createElement('small');
       card.className='drive-credential-card config-list-item';card.open=Boolean(credential.editing);fields.className='google-config-fields';
       const updateTitle=()=>{title.textContent=(index+1)+'. '+(credential.label||'Tài khoản Drive mới');code.textContent=(credential.enabled===false?'Đã tắt':'Đang bật')+' · '+(credential.id||'Chưa lưu')+' · Bấm để chỉnh sửa';};
       updateTitle();head.append(title,code);card.addEventListener('toggle',()=>credential.editing=card.open);
-      const change=key=>value=>{credential[key]=value;dirty=true;};
+      const change=key=>value=>{credential[key]=value;dirty=true;renderTokenList();};
       if(credential.clientId !== undefined)fields.append(input('Tên tài khoản / cấu hình',credential.label,change('label'),{maxLength:100}),
         input('OAuth Client ID',credential.clientId,change('clientId'),{maxLength:512}),
         input('OAuth Client Secret',credential.clientSecret,change('clientSecret'),{type:'password',required:!credential.clientSecretConfigured,placeholder:credential.clientSecretConfigured?'Đã lưu — để trống để giữ nguyên':''}),
@@ -73,6 +88,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
       }));
       card.append(controls);box.append(card);
     });
+    renderTokenList();
     $('#add-drive-credential').disabled=!driveLoaded||credentials.length>=100;
     $('#save-drive-credentials').disabled=!driveLoaded;
   }
@@ -120,7 +136,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
   });
   $('#add-drive-credential').addEventListener('click',()=>{
     if(!driveLoaded||credentials.length>=100)return;
-    credentials.push({label:'Token Drive '+(credentials.length+1),refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
+    credentials.push({label:'Token dự phòng '+(credentials.length+1),refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();editCredential(credentials.length-1);
   });
   $('#reload-drive-credentials').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive()));
   $('#refresh-drive-issuance').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive(false)));
@@ -148,6 +164,8 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
       credentials=[];targets=[];revision=0;driveLoaded=false;statusLoaded=false;dirty=false;
       $('#drive-credentials-editor').replaceChildren();$('#sheet-target-editor').replaceChildren();
       $('#save-drive-credentials').disabled=true;$('#add-drive-credential').disabled=true;
+      $('#drive-credentials-count').textContent='Chưa tải danh sách token.';
+      table('#drive-token-list',[],()=>[]);
       table('#drive-consumers',[],()=>[]);table('#drive-credential-events',[],()=>[]);
     }
   };
