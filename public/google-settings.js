@@ -61,7 +61,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
         input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':''}),
         input('Thư mục Drive ID',credential.folderId,change('folderId'),{maxLength:200}));
       else {
-        fields.append(input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':'Dán refresh token'}));
+        fields.append(input('Tên token',credential.label,change('label'),{maxLength:100}),input('DRIVE_REFRESH_TOKEN',credential.refreshToken,change('refreshToken'),{type:'password',required:!credential.refreshTokenConfigured,placeholder:credential.refreshTokenConfigured?'Đã lưu — để trống để giữ nguyên':'Dán refresh token'}));
         const help=document.createElement('p');help.className='muted';help.textContent='Dùng Client ID, Client Secret và thư mục sẵn có của dịch vụ nhận token.';fields.append(help);
       }
       card.append(head,fields,checkbox('Cho phép cấp cấu hình này',credential.enabled!==false,change('enabled')));
@@ -120,7 +120,7 @@ export function mountGoogleSettings({api,notice,busy,date,table,button}){
   });
   $('#add-drive-credential').addEventListener('click',()=>{
     if(!driveLoaded||credentials.length>=100)return;
-    credentials.push({label:'Tài khoản Drive '+(credentials.length+1),clientId:'',folderId:'',refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
+    credentials.push({label:'Token Drive '+(credentials.length+1),refreshToken:'',enabled:true,editing:true});dirty=true;renderCredentials();
   });
   $('#reload-drive-credentials').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive()));
   $('#refresh-drive-issuance').addEventListener('click',event=>busy(event.currentTarget,()=>loadDrive(false)));

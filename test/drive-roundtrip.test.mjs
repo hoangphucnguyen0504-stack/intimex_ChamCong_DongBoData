@@ -24,8 +24,7 @@ test('real broker HTTP and encrypted HDoi volume acquire once, survive restart a
  const env={DRIVE_CREDENTIAL_ENCRYPTION_KEY:key,DATA_DONG_BO_URL:'http://127.0.0.1:'+server.address().port,DATA_DONG_BO_TOKEN:'TEST-BACKEND-TOKEN',DRIVE_CLIENT_ID:'local-client',DRIVE_CLIENT_SECRET:'TEST-LOCAL-SECRET',DRIVE_REFRESH_TOKEN:'TEST-LOCAL-REFRESH',DRIVE_FOLDER_ID:'local-folder'};
  let calls=0;const options={env,root,fetchImpl:(...args)=>{calls++;return fetch(...args);}};
  const first=createCredentialStore(options);
- assert.equal((await first.acquire({consumer:'hdoi'})).id,'environment');assert.equal(calls,0);
- assert.equal((await first.acquire({consumer:'hdoi',currentId:'environment',reason:'userRateLimitExceeded'})).id,'a');assert.equal(calls,1);
+ assert.equal((await first.acquire({consumer:'hdoi'})).id,'a');assert.equal(calls,1);
  const restarted=createCredentialStore(options);
  assert.equal((await restarted.acquire({consumer:'hdoi'})).id,'a');assert.equal(calls,1);
  await restarted.owner('hdoi','file_roundtrip_123456','a');
