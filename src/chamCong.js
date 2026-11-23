@@ -255,7 +255,6 @@ export async function readRows(pool,key,entity,query,options={}){
       return {ok:true,headers,rows:[],upper,hasMore:false,nextAfter:null};
     }
   }
-  const keyFilter=stateKey?" AND r.state_key=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?":'';
   // Rank the bounded snapshot before applying the page cursor: otherwise an old
   // revision could reappear on a later page. BINARY matches JavaScript Map keys.
   // Legacy groups with non-numeric revisions keep their original append order
@@ -277,9 +276,10 @@ export async function readRows(pool,key,entity,query,options={}){
     ) page JOIN records content ON content.entity=? AND content.id=page.id
     ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
-      ?`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
+      // Narrow by revision before opening JSON payloads or sorting physical rows.
+      ?`SELECT ${columns} FROM records r FORCE INDEX (idx_records_state_revision) JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=? AND r.state_revision=LEFT(?,191) AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
-      stateKey?[entity,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+      stateKey?[entity,stateKey,revision,revision,limit+1]:[entity,after,upper,limit+1]);
   // A stale map for a soft-deleted record must not become an archive candidate.
   // Missing, unarchived records indicate broken mapping; never return empty account cells.
   if(candidates.some(row=>row.id==null&&!row.archived_at))throw new Fault(503,'ROW_MAP_RECORD_MISSING','Vị trí dữ liệu không còn bản ghi tương ứng; cần đối chiếu dữ liệu.');

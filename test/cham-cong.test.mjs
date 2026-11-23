@@ -73,11 +73,12 @@ test('state key reads only the latest revision of that key',async()=>{
  const original=f.pool.query;
  f.pool.query=async(sql,args)=>sql.includes('ORDER BY r.updated_at DESC')?[[{revision:'rev-9'}]]:original(sql,args);
  await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'runtime-config'});
- const query=f.calls.find(c=>c.sql.includes("r.state_key=?")||c.sql.startsWith('SELECT r.id'));
+ const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
  assert.ok(query);
  assert.equal(query.sql.includes("JSON_EXTRACT(r.data,'$.Revision')"),true);
- assert.equal(query.args.at(-3),'runtime-config');
- assert.equal(query.args.at(-2),'rev-9');
+ assert.match(query.sql,/FORCE INDEX \(idx_records_state_revision\)/);
+ assert.match(query.sql,/r\.state_revision=LEFT\(\?,191\)/);
+ assert.deepEqual(query.args,['ApplicationState','runtime-config','rev-9','rev-9',50001]);
  await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'bad key'}),{code:'INVALID_PAGE'});
  const longKey='@state/gate/submission-cooldown/'+'sheet'.repeat(11)+'/VEHICLE_IN/'+'a'.repeat(64)+'/'+'b'.repeat(64);
  const longPage=await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:longKey});
