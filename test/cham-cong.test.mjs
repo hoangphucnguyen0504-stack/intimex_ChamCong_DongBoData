@@ -69,16 +69,16 @@ test('ids view returns record ids and does not select json data',async()=>{
  assert.deepEqual(page,{ok:true,headers,rows:[['ATT-1'],['ATT-2']],upper:19,hasMore:false,nextAfter:null});
 });
 test('state key reads only the latest revision of that key',async()=>{
- const f=readPool([{id:'AST-1',data:JSON.stringify({ID:'AST-1',Key:'runtime-config',Revision:'rev-9',Value:'{}'}),sheet_row:2}]);
+ const f=readPool([{id:'rev-9:0',data:JSON.stringify({ID:'rev-9:0',Key:'runtime-config',Revision:'rev-9',Value:'{}'}),sheet_row:2}]);
  const original=f.pool.query;
- f.pool.query=async(sql,args)=>sql.includes('ORDER BY r.updated_at DESC')?[[{revision:'rev-9'}]]:original(sql,args);
+ f.pool.query=async(sql,args)=>sql.includes('ORDER BY r.updated_at DESC')?[[{id:'rev-9:0',revision:'rev-9',part:'0',parts:'1'}]]:original(sql,args);
  await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'runtime-config'});
  const query=f.calls.find(c=>c.sql.startsWith('SELECT r.id'));
  assert.ok(query);
  assert.equal(query.sql.includes("JSON_EXTRACT(r.data,'$.Revision')"),true);
- assert.match(query.sql,/FORCE INDEX \(idx_records_state_revision\)/);
- assert.match(query.sql,/r\.state_revision=LEFT\(\?,191\)/);
- assert.deepEqual(query.args,['ApplicationState','runtime-config','rev-9','rev-9',50001]);
+ assert.match(query.sql,/FORCE INDEX \(PRIMARY\) STRAIGHT_JOIN/);
+ assert.match(query.sql,/r\.id IN \(\?\)/);
+ assert.deepEqual(query.args,['ApplicationState','runtime-config','rev-9',['rev-9:0']]);
  await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'bad key'}),{code:'INVALID_PAGE'});
  const longKey='@state/gate/submission-cooldown/'+'sheet'.repeat(11)+'/VEHICLE_IN/'+'a'.repeat(64)+'/'+'b'.repeat(64);
  const longPage=await readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:longKey});

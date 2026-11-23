@@ -243,9 +243,10 @@ export async function readRows(pool,key,entity,query,options={}){
   }
   if(after===0)await assertMapped(pool,entity);
   const columns=ids?'r.id,m.sheet_row,m.id AS map_id,m.archived_at':'r.id,r.data,m.sheet_row,m.id AS map_id,m.archived_at';
-  let revision=null;
+  let revision=null, stateIds;
   if(stateKey){
-    const [latest]=await pool.query(`SELECT JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision
+    const [latest]=await pool.query(`SELECT r.id, JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision')) revision,
+      JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Part')) part, JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Parts')) parts
       FROM records r
       WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=?
       ORDER BY r.updated_at DESC LIMIT 1`,[entity,stateKey]);
@@ -253,6 +254,11 @@ export async function readRows(pool,key,entity,query,options={}){
     if(!revision){
       const headers=json(e.headers);
       return {ok:true,headers,rows:[],upper,hasMore:false,nextAfter:null};
+    }
+    const {id,part,parts}=latest[0],total=Number(parts),index=Number(part);
+    if(part!=null&&part!==''&&Number.isInteger(total)&&total>0&&total<=200&&Number.isInteger(index)&&index>=0&&index<total){
+      const prefix=[digest(stateKey).slice(0,24),revision].find(value=>id===value+':'+index);
+      if(prefix)stateIds=Array.from({length:total},(_,part)=>prefix+':'+part);
     }
   }
   // Rank the bounded snapshot before applying the page cursor: otherwise an old
@@ -264,7 +270,13 @@ export async function readRows(pool,key,entity,query,options={}){
   const refKey="BINARY COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Key')),JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.RecordID')),r.id)";
   const refRevision="JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))";
   const numeric=`${refRevision} REGEXP '^[0-9]{1,15}$'`;
-  const [candidates]=keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
+  const stateRows=`SELECT ${columns} FROM records r JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=? AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=?`;
+  // Stable and legacy chunk IDs both let MySQL load the current revision by primary key.
+  // An incomplete or nonstandard group uses the existing revision lookup.
+  const pointStateRows=stateRows.replace('records r JOIN','records r FORCE INDEX (PRIMARY) STRAIGHT_JOIN');
+  const [pointRows]=stateIds?await pool.query(pointStateRows+' AND r.id IN (?) ORDER BY m.sheet_row',[entity,stateKey,revision,stateIds]):[[]];
+  const [candidates]=stateIds&&pointRows.length===stateIds.length?[pointRows.slice(0,limit+1)]
+    :keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
     SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
       ROW_NUMBER() OVER (PARTITION BY ${refKey} ORDER BY CASE WHEN ${numeric} THEN CAST(${refRevision} AS DECIMAL(30,0)) ELSE 0 END DESC,m.sheet_row) AS revision_rank,
@@ -276,10 +288,9 @@ export async function readRows(pool,key,entity,query,options={}){
     ) page JOIN records content ON content.entity=? AND content.id=page.id
     ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
-      // Narrow by revision before opening JSON payloads or sorting physical rows.
-      ?`SELECT ${columns} FROM records r FORCE INDEX (idx_records_state_revision) JOIN row_map m ON m.entity=r.entity AND m.id=r.id WHERE r.entity=? AND r.deleted_at IS NULL AND r.state_key=? AND r.state_revision=LEFT(?,191) AND JSON_UNQUOTE(JSON_EXTRACT(r.data,'$.Revision'))=? ORDER BY m.sheet_row LIMIT ?`
+      ?stateRows+' ORDER BY m.sheet_row LIMIT ?'
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
-      stateKey?[entity,stateKey,revision,revision,limit+1]:[entity,after,upper,limit+1]);
+      stateKey?[entity,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
   // A stale map for a soft-deleted record must not become an archive candidate.
   // Missing, unarchived records indicate broken mapping; never return empty account cells.
   if(candidates.some(row=>row.id==null&&!row.archived_at))throw new Fault(503,'ROW_MAP_RECORD_MISSING','Vị trí dữ liệu không còn bản ghi tương ứng; cần đối chiếu dữ liệu.');
