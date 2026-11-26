@@ -95,9 +95,15 @@ for (const usePointLookup of [true,false]) {
   const original=f.pool.query;
   f.pool.query=async(sql,args)=>{
    if(sql.includes('ORDER BY r.updated_at DESC'))return [[{id:usePointLookup?'rev-9:0':'legacy',revision:'rev-9',part:'0',parts:'3'}]];
-   if(sql.startsWith('SELECT r.id')&&!usePointLookup){
+   if(sql.startsWith('SELECT COUNT(*) AS count')&&usePointLookup)return [[{count:rows.length}]];
+   if(sql.startsWith('SELECT r.id')&&(!usePointLookup||sql.includes('m.sheet_row>?'))){
     assert.match(sql,/m\.sheet_row>\? AND m\.sheet_row<=\?/);
     const [after,upper,limit]=args.slice(-3);
+    if(usePointLookup){
+     assert.match(sql,/FORCE INDEX \(PRIMARY\)/);
+     assert.deepEqual([after,upper,limit],[2,4,2]);
+     assert.deepEqual(args[3],['rev-9:0','rev-9:1','rev-9:2']);
+    }
     return [rows.filter(row=>row.sheet_row>after&&row.sheet_row<=upper).slice(0,limit)];
    }
    return original(sql,args);

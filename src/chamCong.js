@@ -279,8 +279,19 @@ export async function readRows(pool,key,entity,query,options={}){
   // Stable and legacy chunk IDs both let MySQL load the current revision by primary key.
   // An incomplete or nonstandard group uses the existing revision lookup.
   const pointStateRows=stateRows.replace('records r JOIN','records r FORCE INDEX (PRIMARY) STRAIGHT_JOIN');
-  const [pointRows]=stateIds?await pool.query(pointStateRows+' AND r.id IN (?) ORDER BY m.sheet_row',[entity,stateKey,revision,stateIds]):[[]];
-  const [candidates]=stateIds&&pointRows.length===stateIds.length?[pointRows.filter(row=>row.sheet_row>after&&row.sheet_row<=upper).slice(0,limit+1)]
+  let pointPage;
+  if(stateIds){
+    const pointSql=pointStateRows+' AND r.id IN (?)';
+    const args=[entity,stateKey,revision,stateIds];
+    if(after===0){
+      const [rows]=await pool.query(pointSql+' ORDER BY m.sheet_row',args);
+      if(rows.length===stateIds.length)pointPage=rows.filter(row=>row.sheet_row>after&&row.sheet_row<=upper).slice(0,limit+1);
+    }else{
+      const [[{count}]]=await pool.query(pointSql.replace(`SELECT ${columns}`, 'SELECT COUNT(*) AS count'),args);
+      if(Number(count)===stateIds.length)[pointPage]=await pool.query(pointSql+' AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?',[...args,after,upper,limit+1]);
+    }
+  }
+  const [candidates]=pointPage?[pointPage]
     :keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
     SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
