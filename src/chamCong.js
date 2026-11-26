@@ -177,9 +177,14 @@ const stateSlices={
 export async function revisions(pool,key,spreadsheetId){
   await assertBinding(pool,key,spreadsheetId);
   const [entities]=await pool.query("SELECT entity AS name, CONCAT(COUNT(*), ':', DATE_FORMAT(MAX(updated_at), '%Y-%m-%d %H:%i:%s.%f')) AS revision FROM records GROUP BY entity");
-  const token=expr=>`CONCAT(SUM(${expr}), ':', IFNULL(DATE_FORMAT(MAX(CASE WHEN ${expr} THEN updated_at END), '%Y-%m-%d %H:%i:%s.%f'), ''))`;
+  const token=expr=>`CONCAT(SUM(row_count * (${expr})), ':', IFNULL(DATE_FORMAT(MAX(CASE WHEN ${expr} THEN updated_at END), '%Y-%m-%d %H:%i:%s.%f'), ''))`;
   const columns=Object.entries(stateSlices).map(([name,expr])=>`${token(expr)} AS \`${name}\``).join(',');
-  const [[row]]=await pool.query(`SELECT ${columns} FROM records WHERE entity='ApplicationState'`);
+  // Evaluate the slice predicates once per state key, while counting every chunk.
+  const [[row]]=await pool.query(`SELECT ${columns} FROM (
+    SELECT state_key, COUNT(*) AS row_count, MAX(updated_at) AS updated_at
+    FROM records WHERE entity='ApplicationState'
+    GROUP BY state_key
+  ) AS state_rows`);
   const values={};
   for(const item of entities)if(item.revision)values[item.name]=item.revision;
   for(const name of Object.keys(stateSlices)){
