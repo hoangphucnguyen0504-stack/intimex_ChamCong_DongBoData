@@ -85,6 +85,30 @@ test('state key reads only the latest revision of that key',async()=>{
  assert.equal(longPage.ok,true);
  await assert.rejects(()=>readRows(f.pool,key,'ApplicationState',{spreadsheetId,key:'k'.repeat(513)}),{code:'INVALID_PAGE'});
 });
+for (const usePointLookup of [true,false]) {
+ test(`state pages advance within upper bound (${usePointLookup?'primary key':'revision lookup'})`,async()=>{
+  const rows=[2,4,7].map((sheet_row,part)=>{
+   const id='rev-9:'+part;
+   return {id,sheet_row,data:JSON.stringify({ID:id})};
+  });
+  const f=readPool(rows);
+  const original=f.pool.query;
+  f.pool.query=async(sql,args)=>{
+   if(sql.includes('ORDER BY r.updated_at DESC'))return [[{id:usePointLookup?'rev-9:0':'legacy',revision:'rev-9',part:'0',parts:'3'}]];
+   if(sql.startsWith('SELECT r.id')&&!usePointLookup){
+    assert.match(sql,/m\.sheet_row>\? AND m\.sheet_row<=\?/);
+    const [after,upper,limit]=args.slice(-3);
+    return [rows.filter(row=>row.sheet_row>after&&row.sheet_row<=upper).slice(0,limit)];
+   }
+   return original(sql,args);
+  };
+  const query={spreadsheetId,key:'runtime-config',upper:4,limit:1};
+  const first=await readRows(f.pool,key,'ApplicationState',query);
+  const second=await readRows(f.pool,key,'ApplicationState',{...query,after:first.nextAfter});
+  assert.deepEqual([first.rows[0][0],first.hasMore,first.nextAfter],['rev-9:0',true,2]);
+  assert.deepEqual([second.rows[0][0],second.hasMore,second.nextAfter],['rev-9:1',false,null]);
+ });
+}
 test('limit above 50000 is an invalid page',async()=>{
  const f=fixture();
  await assert.rejects(()=>readRows(f.pool,key,'Attendance',{spreadsheetId,limit:50001}),{code:'INVALID_PAGE'});

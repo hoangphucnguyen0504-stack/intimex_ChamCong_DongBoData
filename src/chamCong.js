@@ -275,7 +275,7 @@ export async function readRows(pool,key,entity,query,options={}){
   // An incomplete or nonstandard group uses the existing revision lookup.
   const pointStateRows=stateRows.replace('records r JOIN','records r FORCE INDEX (PRIMARY) STRAIGHT_JOIN');
   const [pointRows]=stateIds?await pool.query(pointStateRows+' AND r.id IN (?) ORDER BY m.sheet_row',[entity,stateKey,revision,stateIds]):[[]];
-  const [candidates]=stateIds&&pointRows.length===stateIds.length?[pointRows.slice(0,limit+1)]
+  const [candidates]=stateIds&&pointRows.length===stateIds.length?[pointRows.filter(row=>row.sheet_row>after&&row.sheet_row<=upper).slice(0,limit+1)]
     :keyPrefix?[await prefixLatest(pool,entity,keyPrefix,after,upper,limit+1)]:!stateKey?await pool.query(`SELECT page.id,content.data,page.sheet_row FROM (
     SELECT ranked.id,ranked.sheet_row FROM (
     SELECT r.id,m.sheet_row,
@@ -288,9 +288,9 @@ export async function readRows(pool,key,entity,query,options={}){
     ) page JOIN records content ON content.entity=? AND content.id=page.id
     ORDER BY page.sheet_row`,[entity,upper,after,limit+1,entity])
     :await pool.query(stateKey
-      ?stateRows+' ORDER BY m.sheet_row LIMIT ?'
+      ?stateRows+' AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?'
       :`SELECT ${columns} FROM row_map m LEFT JOIN records r ON r.entity=m.entity AND r.id=m.id WHERE m.entity=? AND m.deleted_at IS NULL AND r.deleted_at IS NULL AND m.sheet_row>? AND m.sheet_row<=? ORDER BY m.sheet_row LIMIT ?`,
-      stateKey?[entity,stateKey,revision,limit+1]:[entity,after,upper,limit+1]);
+      stateKey?[entity,stateKey,revision,after,upper,limit+1]:[entity,after,upper,limit+1]);
   // A stale map for a soft-deleted record must not become an archive candidate.
   // Missing, unarchived records indicate broken mapping; never return empty account cells.
   if(candidates.some(row=>row.id==null&&!row.archived_at))throw new Fault(503,'ROW_MAP_RECORD_MISSING','Vị trí dữ liệu không còn bản ghi tương ứng; cần đối chiếu dữ liệu.');
